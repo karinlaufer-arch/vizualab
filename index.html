@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>samora.LAB — Product Image Studio</title>
+  <meta name="description" content="כלי עריכת תמונות מוצר מבוסס AI" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; }
+    body { background: #111111; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React + Babel (for JSX in browser) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Firebase SDKs -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyAVMJbiTHinPnsIRu3zvul_HSzcZ2-8D98",
+      authDomain: "samora-lab.firebaseapp.com",
+      projectId: "samora-lab",
+      storageBucket: "samora-lab.firebasestorage.app",
+      messagingSenderId: "869894209795",
+      appId: "1:869894209795:web:23698dfe7ae8b51a7b2936"
+    };
+
+    const fbApp = initializeApp(firebaseConfig);
+    const auth  = getAuth(fbApp);
+    const db    = getFirestore(fbApp);
+
+    // Expose to global scope for the React component
+    window.__firebase = { auth, db, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile, doc, setDoc, getDoc, collection, getDocs, deleteDoc };
+
+    // Signal that Firebase is ready
+    window.dispatchEvent(new Event("firebase-ready"));
+  </script>
+
+  <!-- Main App -->
+  <script type="text/babel" data-type="module">
+    const { useState, useRef, useCallback, useEffect } = React;
+
+    // Wait for Firebase
+    const waitForFirebase = () => new Promise(res => {
+      if (window.__firebase) return res(window.__firebase);
+      window.addEventListener("firebase-ready", () => res(window.__firebase), { once: true });
+    });
+
+    // ── Design tokens ─────────────────────────────────────────────
+    const C = {
+      headerBg:"#111111", headerText:"#ffffff", headerBorder:"#333333",
+      bodyBg:"#ffffff",   bodyText:"#111111",
+      panelBg:"#f4f4f4",  panelBorder:"#e2e2e2",
+      green:"#08f82e",    greenDark:"#06c825",  greenLight:"rgba(8,248,46,0.12)",
+      muted:"#777777",    mutedDark:"#444444",
+      inputBg:"#f9f9f9",  inputBorder:"#d8d8d8",
+    };
+
+    const LIGHTING_OPTIONS  = ["סטודיו נקי","רך ומפוזר","דרמטי - צד","טבעי - חלון","רטרו - חם","קריר וטכנולוגי"];
+    const ANGLE_OPTIONS     = ["פרונטלי ישיר","45° ימין","45° שמאל","עילי (מלמעלה)","3/4 פרונטלי","תחתי (מלמטה)"];
+    const ASPECT_OPTIONS    = ["1:1 (ריבועי)","4:3 (סטנדרט)","16:9 (רחב)","2:3 (פורטרט)","3:4 (פורטרט רחב)","4:5 (אינסטגרם)"];
+    const STYLE_OPTIONS     = ["מינימליסטי","לוקס","ספורטיבי","טכנולוגי","אורגני-טבעי","אורבני","פרמיום"];
+    const BG_OPTIONS        = ["לבן נקי","אפור בהיר","אפור כהה","שחור","גרדיאנט אפור","גרדיאנט כהה","בז' עדין","כחול עמוק"];
+    const SHARPNESS_OPTIONS = ["רגיל","חד מאוד","עומק שדה רדוד","פוקוס מושלם"];
+    const SHADOW_OPTIONS    = ["ללא צל","צל עדין","צל נפח","רפלקציה (ראי)","צל דרמטי"];
+    const CONTRAST_OPTIONS  = ["רגיל","ניגודיות גבוהה","ניגודיות נמוכה - רכה","HDR"];
+
+    const AI_PROVIDERS = [
+      { id:"openai",    name:"DALL·E 3",      sub:"OpenAI",       color:"#ffffff" },
+      { id:"stability", name:"Nano Banana 2", sub:"Stability AI", color:"#ffffff" },
+      { id:"replicate", name:"Replicate",     sub:"SDXL",         color:"#ffffff" },
+    ];
+
+    const OPENAI_MODELS = [
+      { id:"gpt-5.4",  name:"GPT-5.4",  badge:"חדש",    badgeColor:"#08f82e", desc:"המודל החזק ביותר — vision, קוד, agents", imageModel:"gpt-image-1" },
+      { id:"gpt-5.2",  name:"GPT-5.2",  badge:null,      badgeColor:null,      desc:"מודל קודם — יציב ומהיר",                  imageModel:"dall-e-3"   },
+      { id:"dall-e-3", name:"DALL·E 3", badge:"תמונות", badgeColor:"#08f82e", desc:"מתמחה ביצירת תמונות איכותיות",             imageModel:"dall-e-3"   },
+      { id:"dall-e-2", name:"DALL·E 2", badge:"מהיר",   badgeColor:"#f59e0b", desc:"מהיר ויעיל לעיבוד בכמויות",                imageModel:"dall-e-2"   },
+    ];
+
+    const TABS = ["✦ עורך","◈ ספריית רפרנס","◉ פרופילים שמורים"];
+    const SEASON_COLORS = {
+      "קיץ":"#f59e0b","חורף":"#60a5fa","אביב":"#34d399","סתיו":"#f97316",
+      "כללי":"#888","אינסטגרם":"#ec4899","קטלוג":"#08f82e","מכירה":"#ef4444",
+    };
+
+    const DEFAULT_SETTINGS = {
+      background:"אפור בהיר", lighting:"סטודיו נקי", angle:"פרונטלי ישיר",
+      sharpness:"חד מאוד", shadow:"צל עדין", contrast:"רגיל",
+      style:"מינימליסטי", aspect:"1:1 (ריבועי)", extraPrompt:"",
+    };
+
+    const INITIAL_PROFILES = [
+      { id:1, name:"קטלוג בסיסי",    campaign:"קטלוג",     ...DEFAULT_SETTINGS },
+      { id:2, name:"אינסטגרם לוקס", campaign:"אינסטגרם", background:"גרדיאנט כהה", lighting:"רך ומפוזר", angle:"45° ימין", sharpness:"עומק שדה רדוד", shadow:"צל נפח", contrast:"ניגודיות גבוהה", style:"לוקס", aspect:"4:5 (אינסטגרם)", extraPrompt:"" },
+      { id:3, name:"קמפיין קיץ",     campaign:"קיץ",       background:"לבן נקי", lighting:"טבעי - חלון", angle:"45° ימין", sharpness:"פוקוס מושלם", shadow:"צל עדין", contrast:"רגיל", style:"אורגני-טבעי", aspect:"4:5 (אינסטגרם)", extraPrompt:"warm summer tones, bright and airy feel" },
+    ];
+
+    function buildPrompt(s) {
+      return ["Professional product photography, commercial studio shot",
+        `Background: ${s.background}`,`Studio lighting: ${s.lighting}`,
+        `Camera angle: ${s.angle}`,`Sharpness and depth of field: ${s.sharpness}`,
+        `Shadow style: ${s.shadow}`,`Contrast: ${s.contrast}`,
+        `Visual style: ${s.style}`,`Aspect ratio: ${s.aspect}`,
+        s.extraPrompt||null,
+        "photorealistic, ultra high quality, clean professional look, isolated product on background, commercial photography"
+      ].filter(Boolean).join(". ");
+    }
+
+    // ── Tag ───────────────────────────────────────────────────────
+    function Tag({ label, value, onChange, options }) {
+      return (
+        <div style={{ marginBottom:16 }}>
+          <div style={{ fontSize:10, fontWeight:700, color:C.greenDark, letterSpacing:2, textTransform:"uppercase", marginBottom:7 }}>{label}</div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+            {options.map(opt => (
+              <button key={opt} onClick={() => onChange(opt)} style={{
+                padding:"5px 11px", borderRadius:4,
+                border: value===opt ? `1.5px solid ${C.green}` : `1px solid ${C.inputBorder}`,
+                background: value===opt ? C.greenLight : "#ffffff",
+                color: value===opt ? C.greenDark : C.mutedDark,
+                fontSize:11, fontFamily:"Rubik", cursor:"pointer",
+                transition:"all 0.15s", fontWeight: value===opt ? 600 : 400,
+              }}>{opt}</button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // ── UploadZone ────────────────────────────────────────────────
+    function UploadZone({ onFiles, images, onRemove }) {
+      const [drag, setDrag] = useState(false);
+      const inputRef = useRef();
+      const handleDrop = useCallback((e) => {
+        e.preventDefault(); setDrag(false);
+        const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith("image/"));
+        if (files.length) onFiles(files);
+      }, [onFiles]);
+      return (
+        <div>
+          <div onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)}
+            onDrop={handleDrop} onClick={()=>inputRef.current?.click()}
+            style={{ border:drag?`2px solid ${C.green}`:`2px dashed ${C.inputBorder}`, borderRadius:10,
+              padding:"28px 16px", textAlign:"center", cursor:"pointer",
+              background:drag?C.greenLight:C.panelBg, transition:"all 0.2s", marginBottom:14 }}>
+            <div style={{ fontSize:26, marginBottom:8, color:C.muted }}>⊕</div>
+            <div style={{ color:C.bodyText, fontSize:12, fontFamily:"Rubik", fontWeight:500 }}>גרור תמונות מוצר לכאן</div>
+            <div style={{ color:C.muted, fontSize:10, marginTop:4 }}>PNG · JPG · WEBP</div>
+            <input ref={inputRef} type="file" multiple accept="image/*" style={{ display:"none" }}
+              onChange={e => onFiles(Array.from(e.target.files).filter(f=>f.type.startsWith("image/")))} />
+          </div>
+          {images.length>0 && (
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:7 }}>
+              {images.map((img,i) => (
+                <div key={i} style={{ position:"relative", borderRadius:6, overflow:"hidden", aspectRatio:"1", background:C.panelBg, border:`1px solid ${C.panelBorder}` }}>
+                  <img src={img.preview} alt="" style={{ width:"100%", height:"100%", objectFit:"contain" }} />
+                  <div onClick={()=>onRemove(i)} style={{ position:"absolute", inset:0, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", background:"transparent", transition:"background 0.15s" }}
+                    onMouseEnter={e=>e.currentTarget.style.background="rgba(239,68,68,0.35)"}
+                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                    <span style={{ color:"#fff", fontSize:16 }}>✕</span>
+                  </div>
+                  {img.status && (
+                    <div style={{ position:"absolute", top:4, right:4,
+                      background:img.status==="done"?C.green:img.status==="processing"?"#f8a208":"#ef4444",
+                      borderRadius:3, padding:"2px 5px", fontSize:8, fontWeight:700, color:"#000"
+                    }}>{img.status==="done"?"✓":img.status==="processing"?"↻":"!"}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── AuthScreen ────────────────────────────────────────────────
+    function AuthScreen({ onLogin, fb }) {
+      const [mode, setMode]         = useState("login");
+      const [email, setEmail]       = useState("");
+      const [password, setPassword] = useState("");
+      const [name, setName]         = useState("");
+      const [error, setError]       = useState("");
+      const [loading, setLoading]   = useState(false);
+
+      const inp = { width:"100%", padding:"10px 12px", background:C.inputBg,
+        border:`1px solid ${C.inputBorder}`, borderRadius:7, color:C.bodyText,
+        fontSize:13, fontFamily:"Rubik", marginBottom:12, direction:"ltr" };
+
+      const handleSubmit = async () => {
+        setError(""); setLoading(true);
+        try {
+          if (mode==="login") {
+            const cred = await fb.signInWithEmailAndPassword(fb.auth, email, password);
+            onLogin(cred.user);
+          } else {
+            if (!name.trim()) { setError("נא להזין שם מלא"); setLoading(false); return; }
+            const cred = await fb.createUserWithEmailAndPassword(fb.auth, email, password);
+            await fb.updateProfile(cred.user, { displayName: name });
+            await fb.setDoc(fb.doc(fb.db,"users",cred.user.uid), {
+              name, email, role:"user", createdAt: new Date().toISOString()
+            });
+            onLogin(cred.user);
+          }
+        } catch(e) {
+          const msgs = {
+            "auth/user-not-found":"משתמש לא נמצא",
+            "auth/wrong-password":"סיסמה שגויה",
+            "auth/email-already-in-use":"האימייל כבר רשום",
+            "auth/weak-password":"הסיסמה חלשה מדי (לפחות 6 תווים)",
+            "auth/invalid-email":"אימייל לא תקין",
+            "auth/invalid-credential":"פרטי התחברות שגויים",
+          };
+          setError(msgs[e.code] || e.message);
+        }
+        setLoading(false);
+      };
+
+      return (
+        <div style={{ minHeight:"100vh", background:C.headerBg, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"Rubik", direction:"rtl" }}>
+          <div style={{ background:"#ffffff", borderRadius:16, padding:40, width:400, boxShadow:"0 20px 60px rgba(0,0,0,0.4)" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:32, justifyContent:"center" }}>
+              <div style={{ width:40, height:40, borderRadius:"50%", background:"#000", border:"2px solid #000", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, color:"#fff", fontWeight:900 }}>S</div>
+              <div>
+                <div style={{ fontSize:20, fontWeight:800, letterSpacing:2, color:C.bodyText }}>samora<span style={{ color:C.green }}>.LAB</span></div>
+                <div style={{ fontSize:8, color:C.muted, letterSpacing:3 }}>PRODUCT IMAGE STUDIO</div>
+              </div>
+            </div>
+            <div style={{ display:"flex", background:C.panelBg, borderRadius:8, padding:4, marginBottom:24 }}>
+              {[["login","התחברות"],["register","הרשמה"]].map(([m,lbl]) => (
+                <button key={m} onClick={()=>{setMode(m);setError("");}} style={{
+                  flex:1, padding:"8px 0", borderRadius:6, border:"none", cursor:"pointer", fontFamily:"Rubik", fontSize:12, fontWeight:600,
+                  background:mode===m?"#ffffff":"transparent", color:mode===m?C.bodyText:C.muted,
+                  boxShadow:mode===m?"0 1px 4px rgba(0,0,0,0.1)":"none", transition:"all 0.15s",
+                }}>{lbl}</button>
+              ))}
+            </div>
+            {mode==="register" && <input value={name} onChange={e=>setName(e.target.value)} placeholder="שם מלא" style={{...inp, direction:"rtl"}} />}
+            <input type="email"    value={email}    onChange={e=>setEmail(e.target.value)}    placeholder="אימייל" style={inp} />
+            <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="סיסמה"  style={{...inp, marginBottom:8}} />
+            {error && <div style={{ fontSize:11, color:"#ef4444", marginBottom:12, padding:"8px 10px", background:"rgba(239,68,68,0.08)", borderRadius:6, border:"1px solid rgba(239,68,68,0.2)" }}>{error}</div>}
+            <button onClick={handleSubmit} disabled={loading} style={{
+              width:"100%", padding:12, borderRadius:8, border:"none",
+              background:loading?C.panelBorder:C.green, color:"#000",
+              fontSize:13, fontWeight:700, cursor:loading?"default":"pointer", fontFamily:"Rubik",
+              boxShadow:loading?"none":"0 4px 14px rgba(8,220,46,0.35)", transition:"all 0.2s",
+            }}>
+              {loading?"...":mode==="login"?"התחבר/י":"הירשם/י"}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── UserManagement ─────────────────────────────────────────────
+    function UserManagement({ currentUser, onClose, fb }) {
+      const [users, setUsers]       = useState([]);
+      const [loading, setLoading]   = useState(true);
+      const [newEmail, setNewEmail] = useState("");
+      const [newName, setNewName]   = useState("");
+      const [newRole, setNewRole]   = useState("user");
+      const [adding, setAdding]     = useState(false);
+      const [error, setError]       = useState("");
+      const [success, setSuccess]   = useState("");
+
+      const loadUsers = async () => {
+        setLoading(true);
+        const snap = await fb.getDocs(fb.collection(fb.db,"users"));
+        setUsers(snap.docs.map(d => ({ id:d.id, ...d.data() })));
+        setLoading(false);
+      };
+
+      useEffect(() => { loadUsers(); }, []);
+
+      const addUser = async () => {
+        setError(""); setSuccess(""); setAdding(true);
+        try {
+          if (!newEmail||!newName) { setError("נא למלא שם ואימייל"); setAdding(false); return; }
+          const tempId = `invite_${Date.now()}`;
+          await fb.setDoc(fb.doc(fb.db,"users",tempId), {
+            name:newName, email:newEmail, role:newRole,
+            status:"invited", createdAt:new Date().toISOString(), createdBy:currentUser.email
+          });
+          setSuccess(`הזמנה נשמרה עבור ${newEmail}. המשתמש יוכל להירשם עם האימייל הזה.`);
+          setNewEmail(""); setNewName(""); setNewRole("user");
+          loadUsers();
+        } catch(e) { setError(e.message); }
+        setAdding(false);
+      };
+
+      const removeUser = async (uid, userName) => {
+        if (uid===currentUser.uid) { setError("לא ניתן למחוק את עצמך"); return; }
+        if (!confirm(`למחוק את ${userName}?`)) return;
+        await fb.deleteDoc(fb.doc(fb.db,"users",uid));
+        loadUsers();
+      };
+
+      const updateRole = async (uid, role) => {
+        await fb.setDoc(fb.doc(fb.db,"users",uid), { role }, { merge:true });
+        loadUsers();
+      };
+
+      const inp = { padding:"8px 10px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:6, color:C.bodyText, fontSize:11, fontFamily:"Rubik" };
+
+      return (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <div style={{ background:"#fff", borderRadius:14, width:640, maxHeight:"80vh", display:"flex", flexDirection:"column", boxShadow:"0 20px 60px rgba(0,0,0,0.2)", direction:"rtl" }}>
+            <div style={{ padding:"18px 24px", borderBottom:`1px solid ${C.panelBorder}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <div>
+                <div style={{ fontSize:15, fontWeight:700, color:C.bodyText }}>ניהול משתמשים</div>
+                <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>הוסף, ערוך ומחק משתמשים מהמערכת</div>
+              </div>
+              <button onClick={onClose} style={{ fontSize:18, color:C.muted, background:"none", border:"none", cursor:"pointer" }}>✕</button>
+            </div>
+            <div style={{ overflowY:"auto", padding:24, flex:1 }}>
+              <div style={{ background:C.panelBg, borderRadius:10, padding:18, marginBottom:24, border:`1px solid ${C.panelBorder}` }}>
+                <div style={{ fontSize:11, fontWeight:700, color:C.bodyText, marginBottom:14 }}>הוסף משתמש חדש</div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+                  <input value={newName}  onChange={e=>setNewName(e.target.value)}  placeholder="שם מלא" style={{...inp, direction:"rtl"}} />
+                  <input value={newEmail} onChange={e=>setNewEmail(e.target.value)} placeholder="אימייל" style={{...inp, direction:"ltr"}} />
+                </div>
+                <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+                  <select value={newRole} onChange={e=>setNewRole(e.target.value)} style={{...inp, flex:1}}>
+                    <option value="user">משתמש רגיל</option>
+                    <option value="admin">מנהל</option>
+                  </select>
+                  <button onClick={addUser} disabled={adding} style={{ padding:"8px 20px", borderRadius:6, border:"none", background:C.green, color:"#000", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"Rubik", opacity:adding?0.6:1 }}>
+                    {adding?"...":"+ הוסף"}
+                  </button>
+                </div>
+                {error   && <div style={{ fontSize:11, color:"#ef4444", marginTop:10, padding:"7px 10px", background:"rgba(239,68,68,0.08)", borderRadius:6 }}>{error}</div>}
+                {success && <div style={{ fontSize:11, color:C.greenDark, marginTop:10, padding:"7px 10px", background:C.greenLight, borderRadius:6 }}>{success}</div>}
+              </div>
+              <div style={{ fontSize:11, fontWeight:700, color:C.mutedDark, marginBottom:12 }}>משתמשים רשומים ({users.length})</div>
+              {loading ? (
+                <div style={{ textAlign:"center", padding:"30px 0", color:C.muted }}>טוען...</div>
+              ) : users.map(u => (
+                <div key={u.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 14px", background:"#fff", borderRadius:8, border:`1px solid ${C.panelBorder}`, marginBottom:8 }}>
+                  <div style={{ width:36, height:36, borderRadius:"50%", background:u.role==="admin"?C.headerBg:C.panelBg, border:`2px solid ${u.role==="admin"?C.green:C.panelBorder}`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, color:u.role==="admin"?"#fff":C.mutedDark, fontWeight:700, flexShrink:0 }}>
+                    {(u.name||u.email||"?")[0].toUpperCase()}
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:12, fontWeight:600, color:C.bodyText }}>{u.name||"—"}</div>
+                    <div style={{ fontSize:10, color:C.muted }}>{u.email}</div>
+                    {u.status==="invited" && <div style={{ fontSize:9, color:"#f59e0b", marginTop:2 }}>⏳ ממתין להרשמה</div>}
+                  </div>
+                  <select value={u.role||"user"} onChange={e=>updateRole(u.id,e.target.value)}
+                    style={{ padding:"4px 8px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:5, color:C.mutedDark, fontSize:10, fontFamily:"Rubik" }}>
+                    <option value="user">משתמש</option>
+                    <option value="admin">מנהל</option>
+                  </select>
+                  {u.id!==currentUser.uid ? (
+                    <button onClick={()=>removeUser(u.id,u.name||u.email)} style={{ padding:"5px 10px", borderRadius:5, border:"1px solid rgba(239,68,68,0.3)", background:"rgba(239,68,68,0.05)", color:"#ef4444", fontSize:10, cursor:"pointer", fontFamily:"Rubik" }}>מחק</button>
+                  ) : (
+                    <div style={{ fontSize:9, color:C.muted, padding:"5px 10px" }}>את/ה</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  MAIN APP
+    // ════════════════════════════════════════════════════════════════
+    function App() {
+      const [fb, setFb]               = useState(null);
+      const [authUser, setAuthUser]   = useState(null);
+      const [authReady, setAuthReady] = useState(false);
+      const [userRole, setUserRole]   = useState("user");
+      const [showUserMgmt, setShowUserMgmt] = useState(false);
+
+      useEffect(() => {
+        waitForFirebase().then(firebase => {
+          setFb(firebase);
+          const unsub = firebase.onAuthStateChanged(firebase.auth, async (u) => {
+            if (u) {
+              const snap = await firebase.getDoc(firebase.doc(firebase.db,"users",u.uid));
+              setUserRole(snap.exists() ? (snap.data().role||"user") : "user");
+              setAuthUser(u);
+            } else { setAuthUser(null); setUserRole("user"); }
+            setAuthReady(true);
+          });
+          return unsub;
+        });
+      }, []);
+
+      const handleLogout = () => fb.signOut(fb.auth);
+
+      const [activeTab, setActiveTab]         = useState(0);
+      const [images, setImages]               = useState([]);
+      const [results, setResults]             = useState([]);
+      const [selectedAI, setSelectedAI]       = useState("openai");
+      const [selectedModel, setSelectedModel] = useState("dall-e-3");
+      const [showModelPicker, setShowModelPicker] = useState(false);
+      const [apiKeys, setApiKeys]             = useState({ openai:"", stability:"", replicate:"" });
+      const [showApiModal, setShowApiModal]   = useState(false);
+      const [processing, setProcessing]       = useState(false);
+      const [profiles, setProfiles]           = useState(INITIAL_PROFILES);
+      const [profileName, setProfileName]     = useState("");
+      const [profileCampaign, setProfileCampaign] = useState("כללי");
+      const [settings, setSettings]           = useState({ ...DEFAULT_SETTINGS });
+      const [campaigns, setCampaigns]         = useState([
+        { id:1, name:"קטלוג קיץ 2024", season:"קיץ",  refs:[] },
+        { id:2, name:"חורף 2024",       season:"חורף", refs:[] },
+      ]);
+      const [activeCampaign, setActiveCampaign]   = useState(1);
+      const [newCampaignName, setNewCampaignName] = useState("");
+      const [newCampaignSeason, setNewCampaignSeason] = useState("כללי");
+      const [showNewCampaign, setShowNewCampaign] = useState(false);
+      const refInputRef = useRef();
+
+      const set = (key) => (val) => setSettings(p => ({ ...p,[key]:val }));
+      const handleFiles = (files) => setImages(prev => [...prev, ...files.map(f => ({ file:f, name:f.name, preview:URL.createObjectURL(f), status:null }))]);
+      const handleRefFiles = (files) => {
+        const newRefs = files.map(f => ({ id:Date.now()+Math.random(), name:f.name, preview:URL.createObjectURL(f), note:"" }));
+        setCampaigns(prev => prev.map(c => c.id===activeCampaign ? { ...c, refs:[...c.refs,...newRefs].slice(0,50) } : c));
+      };
+      const addCampaign = () => {
+        if (!newCampaignName.trim()) return;
+        const nc = { id:Date.now(), name:newCampaignName, season:newCampaignSeason, refs:[] };
+        setCampaigns(prev => [...prev,nc]); setActiveCampaign(nc.id);
+        setNewCampaignName(""); setShowNewCampaign(false);
+      };
+      const saveProfile = () => {
+        if (!profileName.trim()) return;
+        setProfiles(prev => [...prev, { id:Date.now(), name:profileName, campaign:profileCampaign, ...settings }]);
+        setProfileName("");
+      };
+      const loadProfile = (p) => {
+        setSettings({ background:p.background, lighting:p.lighting, angle:p.angle, sharpness:p.sharpness, shadow:p.shadow, contrast:p.contrast||"רגיל", style:p.style, aspect:p.aspect, extraPrompt:p.extraPrompt||"" });
+        setActiveTab(0);
+      };
+      const handleProcess = async () => {
+        if (!images.length) return;
+        if (!apiKeys[selectedAI]) { setShowApiModal(true); return; }
+        setProcessing(true);
+        const prompt = buildPrompt(settings);
+        const newResults = [];
+        const imageModelToUse = OPENAI_MODELS.find(m=>m.id===selectedModel)?.imageModel||"dall-e-3";
+        for (let i=0; i<images.length; i++) {
+          setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"processing" }:img));
+          await new Promise(r => setTimeout(r,700+Math.random()*400));
+          if (selectedAI==="openai") {
+            try {
+              const resp = await fetch("https://api.openai.com/v1/images/generations", {
+                method:"POST",
+                headers:{ "Content-Type":"application/json","Authorization":`Bearer ${apiKeys.openai}` },
+                body:JSON.stringify({ model:imageModelToUse, prompt:prompt+". product on white background, replace background according to style", n:1, size:"1024x1024" })
+              });
+              const data = await resp.json();
+              if (data.data?.[0]?.url) {
+                newResults.push({ original:images[i].preview, result:data.data[0].url, name:images[i].name, model:selectedModel });
+                setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"done" }:img));
+              } else throw new Error();
+            } catch { setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"error" }:img)); }
+          } else {
+            newResults.push({ original:images[i].preview, result:images[i].preview, name:images[i].name, simulated:true, model:selectedModel });
+            setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"done" }:img));
+          }
+        }
+        setResults(prev => [...prev,...newResults]); setProcessing(false);
+      };
+
+      const currentCampaign = campaigns.find(c => c.id===activeCampaign);
+      const prompt = buildPrompt(settings);
+      const greenBtn = { padding:"7px 18px", borderRadius:6, border:"none", background:C.green, color:"#000", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"Rubik" };
+      const outlineGreenBtn = { borderRadius:6, border:`1px solid ${C.green}`, background:"transparent", color:C.green, fontFamily:"Rubik", cursor:"pointer", fontWeight:600 };
+
+      if (!authReady) return (
+        <div style={{ minHeight:"100vh", background:C.headerBg, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"Rubik" }}>
+          <div style={{ textAlign:"center" }}>
+            <div style={{ width:44, height:44, borderRadius:"50%", background:"#000", border:"2px solid #fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20, color:"#fff", fontWeight:900, margin:"0 auto 16px" }}>S</div>
+            <div style={{ color:"#555", fontSize:12 }}>טוען...</div>
+          </div>
+        </div>
+      );
+
+      if (!authUser) return <AuthScreen onLogin={setAuthUser} fb={fb} />;
+
+      return (
+        <>
+          <style>{`
+            @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;600;700;800;900&display=swap');
+            * { box-sizing:border-box; margin:0; padding:0; }
+            html,body { height:100%; background:#fff; }
+            ::-webkit-scrollbar { width:3px; }
+            ::-webkit-scrollbar-track { background:#f0f0f0; }
+            ::-webkit-scrollbar-thumb { background:#ccc; border-radius:2px; }
+            input,textarea,select { outline:none; }
+            .btn-green:hover { box-shadow:0 4px 14px rgba(8,220,46,0.4); transition:box-shadow 0.2s; }
+          `}</style>
+
+          {showUserMgmt && <UserManagement currentUser={authUser} onClose={()=>setShowUserMgmt(false)} fb={fb} />}
+
+          <div style={{ minHeight:"100vh", background:C.bodyBg, color:C.bodyText, fontFamily:"Rubik", direction:"rtl" }}>
+
+            {/* HEADER */}
+            <div style={{ height:58, background:C.headerBg, padding:"0 24px", display:"flex", alignItems:"center", justifyContent:"space-between", borderBottom:`1px solid ${C.headerBorder}` }}>
+              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                <div style={{ width:32, height:32, borderRadius:"50%", background:"#000", border:"2px solid #fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, color:"#fff", fontWeight:900 }}>S</div>
+                <div>
+                  <div style={{ fontSize:14, fontWeight:800, letterSpacing:2, color:C.headerText }}>samora<span style={{ color:C.green }}>.LAB</span></div>
+                  <div style={{ fontSize:7, color:"#888", letterSpacing:3, fontWeight:500 }}>PRODUCT IMAGE STUDIO</div>
+                </div>
+              </div>
+              <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                {AI_PROVIDERS.map(ai => (
+                  <button key={ai.id} onClick={()=>setSelectedAI(ai.id)} style={{
+                    padding:"5px 12px", borderRadius:5, cursor:"pointer", fontFamily:"Rubik",
+                    border:selectedAI===ai.id?`1.5px solid ${C.green}`:"1px solid #444",
+                    background:selectedAI===ai.id?"rgba(8,248,46,0.15)":"transparent",
+                    color:selectedAI===ai.id?C.green:"#aaa", fontSize:10, fontWeight:700,
+                  }}>
+                    {ai.name}
+                    <span style={{ fontSize:8, display:"block", opacity:0.5, fontWeight:400 }}>{ai.sub}</span>
+                  </button>
+                ))}
+                <div style={{ width:1, height:28, background:"#333", margin:"0 3px" }} />
+                {selectedAI==="openai" && (
+                  <button onClick={()=>setShowModelPicker(v=>!v)} style={{ padding:"5px 12px", borderRadius:5, cursor:"pointer", fontFamily:"Rubik", border:`1px solid ${C.green}`, background:"rgba(8,248,46,0.1)", color:C.green, fontSize:10, fontWeight:600, display:"flex", alignItems:"center", gap:5 }}>
+                    <span style={{ fontSize:9, opacity:0.7 }}>מודל:</span>
+                    {OPENAI_MODELS.find(m=>m.id===selectedModel)?.name||"DALL·E 3"}
+                    <span style={{ fontSize:9, opacity:0.5 }}>▾</span>
+                  </button>
+                )}
+                <button onClick={()=>setShowApiModal(true)} style={{ padding:"5px 12px", borderRadius:5, cursor:"pointer", fontFamily:"Rubik", fontWeight:600, fontSize:9, border:apiKeys[selectedAI]?`1px solid ${C.green}`:"1px solid #555", background:apiKeys[selectedAI]?"rgba(8,248,46,0.1)":"transparent", color:apiKeys[selectedAI]?C.green:"#aaa" }}>
+                  {apiKeys[selectedAI]?"✓ API מחובר":"⚙ API KEY"}
+                </button>
+                <div style={{ width:1, height:28, background:"#333", margin:"0 3px" }} />
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <div style={{ textAlign:"left" }}>
+                    <div style={{ fontSize:11, color:"#fff", fontWeight:600 }}>{authUser.displayName||authUser.email}</div>
+                    {userRole==="admin" && <div style={{ fontSize:8, color:C.green, letterSpacing:1 }}>ADMIN</div>}
+                  </div>
+                  <div style={{ width:30, height:30, borderRadius:"50%", background:userRole==="admin"?C.green:"#333", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, color:userRole==="admin"?"#000":"#fff", fontWeight:700 }}>
+                    {(authUser.displayName||authUser.email||"?")[0].toUpperCase()}
+                  </div>
+                  {userRole==="admin" && (
+                    <button onClick={()=>setShowUserMgmt(true)} style={{ padding:"5px 10px", borderRadius:5, border:"1px solid #444", background:"transparent", color:"#aaa", fontSize:9, cursor:"pointer", fontFamily:"Rubik", fontWeight:600 }}>👥 משתמשים</button>
+                  )}
+                  <button onClick={handleLogout} style={{ padding:"5px 10px", borderRadius:5, border:"1px solid #444", background:"transparent", color:"#aaa", fontSize:9, cursor:"pointer", fontFamily:"Rubik" }}>יציאה</button>
+                </div>
+              </div>
+            </div>
+
+            {/* MODEL PICKER */}
+            {showModelPicker && selectedAI==="openai" && (
+              <div style={{ position:"fixed", top:60, left:0, right:0, zIndex:150, display:"flex", justifyContent:"flex-end", padding:"0 24px" }}>
+                <div style={{ background:"#fff", border:`1px solid ${C.panelBorder}`, borderRadius:10, padding:10, minWidth:320, boxShadow:"0 8px 32px rgba(0,0,0,0.15)" }}>
+                  {OPENAI_MODELS.map(m => (
+                    <div key={m.id} onClick={()=>{ setSelectedModel(m.id); setShowModelPicker(false); }}
+                      style={{ padding:"10px 12px", borderRadius:7, cursor:"pointer", marginBottom:3, background:selectedModel===m.id?C.greenLight:"transparent", border:selectedModel===m.id?`1px solid ${C.green}`:"1px solid transparent" }}
+                      onMouseEnter={e=>{ if(selectedModel!==m.id) e.currentTarget.style.background=C.panelBg; }}
+                      onMouseLeave={e=>{ if(selectedModel!==m.id) e.currentTarget.style.background="transparent"; }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                        <div style={{ flex:1 }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                            <span style={{ fontSize:12, fontWeight:700, color:selectedModel===m.id?"#111":"#555" }}>{m.name}</span>
+                            {m.badge && <span style={{ fontSize:8, background:m.badgeColor, color:"#000", borderRadius:3, padding:"1px 6px", fontWeight:800 }}>{m.badge}</span>}
+                          </div>
+                          <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>{m.desc}</div>
+                        </div>
+                        {selectedModel===m.id && <span style={{ color:C.green }}>✓</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* API MODAL */}
+            {showApiModal && (
+              <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <div style={{ background:"#fff", border:`1px solid ${C.panelBorder}`, borderRadius:14, padding:30, width:420, direction:"rtl" }}>
+                  <div style={{ fontSize:15, fontWeight:700, color:C.bodyText, marginBottom:10 }}>חיבור מפתח API</div>
+                  <div style={{ fontSize:10, color:C.greenDark, marginBottom:14 }}>
+                    {selectedAI==="openai" && "platform.openai.com → API Keys → Create new secret key"}
+                  </div>
+                  <input type="password" placeholder="הדבקי כאן את המפתח (sk-...)" value={apiKeys[selectedAI]}
+                    onChange={e=>setApiKeys(p=>({ ...p,[selectedAI]:e.target.value }))}
+                    style={{ width:"100%", padding:"10px 12px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:7, color:C.bodyText, fontSize:12, fontFamily:"Rubik", marginBottom:10, direction:"ltr" }} />
+                  <div style={{ fontSize:9, color:C.muted, marginBottom:18 }}>🔒 המפתח נשמר רק בדפדפן — לא עובר לשרת חיצוני</div>
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={()=>setShowApiModal(false)} className="btn-green" style={{ ...greenBtn, flex:1, padding:10 }}>שמור וסגור</button>
+                    <button onClick={()=>setShowApiModal(false)} style={{ padding:"10px 16px", borderRadius:7, border:`1px solid ${C.inputBorder}`, background:"transparent", color:C.mutedDark, fontSize:12, cursor:"pointer", fontFamily:"Rubik" }}>ביטול</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TABS */}
+            <div style={{ background:C.panelBg, borderBottom:`1px solid ${C.panelBorder}`, padding:"0 24px", display:"flex" }}>
+              {TABS.map((t,i) => (
+                <button key={i} onClick={()=>setActiveTab(i)} style={{ padding:"13px 18px", background:"none", border:"none", borderBottom:activeTab===i?`2px solid ${C.green}`:"2px solid transparent", color:activeTab===i?C.greenDark:C.mutedDark, fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:"Rubik" }}>{t}</button>
+              ))}
+            </div>
+
+            {/* TAB 0 */}
+            {activeTab===0 && (
+              <div style={{ display:"flex", height:"calc(100vh - 108px)", overflow:"hidden" }}>
+                <div style={{ width:252, borderLeft:`1px solid ${C.panelBorder}`, padding:"18px 14px", overflowY:"auto", flexShrink:0, background:C.panelBg }}>
+                  <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:2, marginBottom:12, textTransform:"uppercase" }}>תמונות מוצר</div>
+                  <UploadZone onFiles={handleFiles} images={images} onRemove={(idx)=>setImages(prev=>prev.filter((_,i)=>i!==idx))} />
+                  {images.length>0 && <button onClick={()=>setImages([])} style={{ marginTop:9, width:"100%", padding:7, borderRadius:5, border:`1px solid ${C.inputBorder}`, background:"#fff", color:C.mutedDark, fontSize:9, cursor:"pointer", fontFamily:"Rubik" }}>✕ נקה הכל</button>}
+                  <div style={{ marginTop:18, padding:12, background:"#fff", borderRadius:8, border:`1px solid ${C.panelBorder}` }}>
+                    <div style={{ fontSize:8, color:C.muted, letterSpacing:1, marginBottom:6, fontWeight:600 }}>TIPS</div>
+                    <div style={{ fontSize:9, color:C.mutedDark, lineHeight:1.8 }}>העלי עם רקע לבן לתוצאה מיטבית. ניתן לעבד עד 20 תמונות בו זמנית.</div>
+                  </div>
+                </div>
+                <div style={{ flex:1, padding:"20px 28px", overflowY:"auto", borderLeft:`1px solid ${C.panelBorder}` }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20, paddingBottom:14, borderBottom:`1px solid ${C.panelBorder}` }}>
+                    <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:2, textTransform:"uppercase" }}>הגדרות סגנון</div>
+                    <div style={{ display:"flex", gap:7, alignItems:"center" }}>
+                      <select value={profileCampaign} onChange={e=>setProfileCampaign(e.target.value)} style={{ padding:"5px 8px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:5, color:C.mutedDark, fontSize:10, fontFamily:"Rubik" }}>
+                        {Object.keys(SEASON_COLORS).map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                      <input value={profileName} onChange={e=>setProfileName(e.target.value)} placeholder="שם פרופיל..." style={{ padding:"5px 10px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:5, color:C.bodyText, fontSize:10, fontFamily:"Rubik", width:130 }} />
+                      <button onClick={saveProfile} className="btn-green" style={{ ...outlineGreenBtn, padding:"5px 12px", fontSize:10 }}>+ שמור</button>
+                    </div>
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 36px" }}>
+                    <div>
+                      <Tag label="רקע"           value={settings.background} onChange={set("background")} options={BG_OPTIONS} />
+                      <Tag label="תאורה"          value={settings.lighting}   onChange={set("lighting")}   options={LIGHTING_OPTIONS} />
+                      <Tag label="זווית צילום"    value={settings.angle}      onChange={set("angle")}      options={ANGLE_OPTIONS} />
+                      <Tag label="חדות ועומק שדה" value={settings.sharpness}  onChange={set("sharpness")}  options={SHARPNESS_OPTIONS} />
+                    </div>
+                    <div>
+                      <Tag label="צלליות"    value={settings.shadow}   onChange={set("shadow")}   options={SHADOW_OPTIONS} />
+                      <Tag label="ניגודיות"  value={settings.contrast} onChange={set("contrast")} options={CONTRAST_OPTIONS} />
+                      <Tag label="סגנון כללי" value={settings.style}   onChange={set("style")}    options={STYLE_OPTIONS} />
+                      <Tag label="יחס תמונה"  value={settings.aspect}  onChange={set("aspect")}   options={ASPECT_OPTIONS} />
+                    </div>
+                  </div>
+                  <div style={{ marginTop:6 }}>
+                    <div style={{ fontSize:10, fontWeight:700, color:C.greenDark, letterSpacing:2, marginBottom:7, textTransform:"uppercase" }}>הוראות נוספות</div>
+                    <textarea value={settings.extraPrompt} onChange={e=>setSettings(p=>({ ...p,extraPrompt:e.target.value }))} placeholder="לדוגמה: ערפל עדין ברקע, גוון זהוב..." style={{ width:"100%", height:62, padding:"9px 12px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:7, color:C.bodyText, fontSize:11, fontFamily:"Rubik", resize:"vertical", lineHeight:1.6 }} />
+                  </div>
+                  <div style={{ marginTop:14, padding:"12px 14px", background:C.panelBg, border:`1px solid ${C.panelBorder}`, borderRadius:8 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:7 }}>
+                      <div style={{ fontSize:8, color:C.muted, letterSpacing:2, fontWeight:700 }}>PROMPT אוטומטי</div>
+                      <button onClick={()=>navigator.clipboard.writeText(prompt)} style={{ fontSize:9, color:C.muted, background:"none", border:"none", cursor:"pointer", fontFamily:"Rubik" }}>⧉ העתק</button>
+                    </div>
+                    <div style={{ fontSize:9, color:C.mutedDark, lineHeight:1.9, direction:"ltr" }}>{prompt}</div>
+                  </div>
+                </div>
+                <div style={{ width:296, padding:"18px 14px", overflowY:"auto", flexShrink:0, background:C.panelBg, borderLeft:`1px solid ${C.panelBorder}` }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                    <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:2, textTransform:"uppercase" }}>תוצאות</div>
+                    <button onClick={handleProcess} disabled={processing||!images.length} className={images.length&&!processing?"btn-green":""} style={{ ...greenBtn, background:images.length&&!processing?C.green:C.panelBorder, color:images.length&&!processing?"#000":C.muted, cursor:images.length?"pointer":"default", padding:"7px 16px" }}>
+                      {processing?"↻ מעבד...":`▶ עבד${images.length?` (${images.length})`:""}`}
+                    </button>
+                  </div>
+                  {results.length===0 ? (
+                    <div style={{ textAlign:"center", padding:"50px 0", color:C.muted }}>
+                      <div style={{ fontSize:34, marginBottom:10, opacity:0.3 }}>◈</div>
+                      <div style={{ fontSize:11 }}>תוצאות יופיעו כאן</div>
+                    </div>
+                  ) : results.map((r,i) => (
+                    <div key={i} style={{ marginBottom:14, background:"#fff", borderRadius:8, overflow:"hidden", border:`1px solid ${C.panelBorder}` }}>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr" }}>
+                        <div style={{ padding:7, borderLeft:`1px solid ${C.panelBorder}` }}>
+                          <div style={{ fontSize:7, color:C.muted, textAlign:"center", marginBottom:4 }}>מקור</div>
+                          <img src={r.original} alt="" style={{ width:"100%", aspectRatio:"1", objectFit:"contain" }} />
+                        </div>
+                        <div style={{ padding:7 }}>
+                          <div style={{ fontSize:7, color:C.greenDark, textAlign:"center", marginBottom:4 }}>תוצאה</div>
+                          <img src={r.result} alt="" style={{ width:"100%", aspectRatio:"1", objectFit:"contain" }} />
+                        </div>
+                      </div>
+                      <div style={{ padding:"6px 10px", borderTop:`1px solid ${C.panelBorder}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                        <div style={{ fontSize:8, color:C.muted, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:140 }}>{r.name}</div>
+                        <a href={r.result} download style={{ fontSize:9, color:C.greenDark, textDecoration:"none", padding:"2px 8px", border:`1px solid ${C.green}`, borderRadius:4, fontWeight:600 }}>⬇</a>
+                      </div>
+                    </div>
+                  ))}
+                  {results.length>1 && <button className="btn-green" style={{ width:"100%", padding:9, borderRadius:6, border:`1px solid ${C.green}`, background:C.greenLight, color:C.greenDark, fontSize:10, fontWeight:700, cursor:"pointer", fontFamily:"Rubik" }}>⬇ הורד הכל</button>}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 1 */}
+            {activeTab===1 && (
+              <div style={{ display:"flex", height:"calc(100vh - 108px)", overflow:"hidden" }}>
+                <div style={{ width:216, borderLeft:`1px solid ${C.panelBorder}`, padding:"18px 13px", overflowY:"auto", flexShrink:0, background:C.panelBg }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+                    <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:2, textTransform:"uppercase" }}>תיקיות קמפיין</div>
+                    <button onClick={()=>setShowNewCampaign(v=>!v)} className="btn-green" style={{ width:22, height:22, borderRadius:5, background:C.green, border:"none", color:"#000", fontSize:15, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700 }}>+</button>
+                  </div>
+                  {showNewCampaign && (
+                    <div style={{ marginBottom:12, padding:11, background:"#fff", borderRadius:8, border:`1px solid ${C.panelBorder}` }}>
+                      <input value={newCampaignName} onChange={e=>setNewCampaignName(e.target.value)} placeholder="שם התיקייה..." style={{ width:"100%", padding:"6px 8px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:5, color:C.bodyText, fontSize:10, fontFamily:"Rubik", marginBottom:7 }} />
+                      <select value={newCampaignSeason} onChange={e=>setNewCampaignSeason(e.target.value)} style={{ width:"100%", padding:"6px 8px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:5, color:C.mutedDark, fontSize:10, fontFamily:"Rubik", marginBottom:8 }}>
+                        {Object.keys(SEASON_COLORS).map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                      <button onClick={addCampaign} className="btn-green" style={{ ...greenBtn, width:"100%", padding:7, fontSize:10 }}>צור תיקייה</button>
+                    </div>
+                  )}
+                  {campaigns.map(c => (
+                    <div key={c.id} onClick={()=>setActiveCampaign(c.id)} style={{ padding:"9px 11px", borderRadius:7, cursor:"pointer", marginBottom:4, background:activeCampaign===c.id?C.greenLight:"#fff", border:activeCampaign===c.id?`1px solid ${C.green}`:`1px solid ${C.panelBorder}` }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                        <div style={{ width:8, height:8, borderRadius:"50%", background:SEASON_COLORS[c.season]||"#aaa", flexShrink:0 }} />
+                        <div>
+                          <div style={{ fontSize:11, color:activeCampaign===c.id?C.greenDark:C.bodyText, fontWeight:600 }}>{c.name}</div>
+                          <div style={{ fontSize:8, color:C.muted, marginTop:1 }}>{c.refs.length} / 50 תמונות</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ flex:1, padding:"20px 26px", overflowY:"auto" }}>
+                  {currentCampaign && (<>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                        <div style={{ width:10, height:10, borderRadius:"50%", background:SEASON_COLORS[currentCampaign.season]||C.muted }} />
+                        <div style={{ fontSize:16, fontWeight:700, color:C.bodyText }}>{currentCampaign.name}</div>
+                      </div>
+                      <button onClick={()=>refInputRef.current?.click()} className="btn-green" style={greenBtn}>+ הוסף תמונות</button>
+                      <input ref={refInputRef} type="file" multiple accept="image/*" style={{ display:"none" }} onChange={e=>handleRefFiles(Array.from(e.target.files))} />
+                    </div>
+                    {currentCampaign.refs.length===0 ? (
+                      <div style={{ textAlign:"center", padding:"80px 0", color:C.muted }}>
+                        <div style={{ fontSize:44, marginBottom:12, opacity:0.2 }}>◈</div>
+                        <div style={{ fontSize:14, marginBottom:6, fontWeight:600, color:C.mutedDark }}>התיקייה ריקה</div>
+                      </div>
+                    ) : (
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))", gap:14 }}>
+                        {currentCampaign.refs.map(ref => (
+                          <div key={ref.id} style={{ background:"#fff", borderRadius:10, overflow:"hidden", border:`1px solid ${C.panelBorder}` }}>
+                            <div style={{ position:"relative" }}>
+                              <img src={ref.preview} alt="" style={{ width:"100%", aspectRatio:"1", objectFit:"cover" }} />
+                              <button onClick={()=>setCampaigns(prev=>prev.map(c=>c.id===activeCampaign?{ ...c,refs:c.refs.filter(r=>r.id!==ref.id) }:c))} style={{ position:"absolute", top:5, left:5, width:22, height:22, borderRadius:"50%", background:"rgba(0,0,0,0.6)", border:"none", color:"#fff", fontSize:10, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
+                            </div>
+                            <div style={{ padding:"8px 10px" }}>
+                              <input value={ref.note} onChange={e=>setCampaigns(prev=>prev.map(c=>c.id===activeCampaign?{ ...c,refs:c.refs.map(r=>r.id===ref.id?{ ...r,note:e.target.value }:r) }:c))} placeholder="תיוג / הערה..." style={{ width:"100%", padding:"5px 7px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:5, color:C.bodyText, fontSize:9, fontFamily:"Rubik" }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>)}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2 */}
+            {activeTab===2 && (
+              <div style={{ padding:"26px 30px", overflowY:"auto", height:"calc(100vh - 108px)", background:C.panelBg }}>
+                <div style={{ marginBottom:24 }}>
+                  <div style={{ fontSize:16, fontWeight:700, color:C.bodyText, marginBottom:4 }}>פרופילים שמורים</div>
+                  <div style={{ fontSize:11, color:C.muted }}>הגדרות מוכנות לפי קמפיין, עונה ופלטפורמה</div>
+                </div>
+                {Object.keys(SEASON_COLORS).map(season => {
+                  const group = profiles.filter(p => p.campaign===season);
+                  if (!group.length) return null;
+                  return (
+                    <div key={season} style={{ marginBottom:32 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
+                        <div style={{ width:8, height:8, borderRadius:"50%", background:SEASON_COLORS[season] }} />
+                        <div style={{ fontSize:11, fontWeight:700, color:C.mutedDark, letterSpacing:1 }}>{season}</div>
+                        <div style={{ flex:1, height:1, background:C.panelBorder }} />
+                      </div>
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(255px,1fr))", gap:13 }}>
+                        {group.map(p => (
+                          <div key={p.id} style={{ background:"#fff", border:`1px solid ${C.panelBorder}`, borderRadius:10, padding:18 }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:14 }}>
+                              <div style={{ fontSize:13, fontWeight:700, color:C.bodyText }}>{p.name}</div>
+                              <button onClick={()=>setProfiles(prev=>prev.filter(pr=>pr.id!==p.id))} style={{ fontSize:12, color:C.muted, background:"none", border:"none", cursor:"pointer" }}>✕</button>
+                            </div>
+                            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
+                              {[["רקע",p.background],["תאורה",p.lighting],["זווית",p.angle],["יחס",p.aspect],["סגנון",p.style],["צל",p.shadow]].map(([l,v]) => (
+                                <div key={l}>
+                                  <div style={{ fontSize:8, color:C.muted, letterSpacing:1, marginBottom:2, textTransform:"uppercase" }}>{l}</div>
+                                  <div style={{ fontSize:10, color:C.mutedDark, fontWeight:500 }}>{v}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <button onClick={()=>loadProfile(p)} className="btn-green" style={{ width:"100%", padding:9, borderRadius:6, border:`1px solid ${C.green}`, background:C.greenLight, color:C.greenDark, fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"Rubik" }}>טען פרופיל ←</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
