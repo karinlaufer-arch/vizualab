@@ -515,61 +515,62 @@
         return await resp.blob();
       };
 
-      // ── Step 2: Generate background only ────────────────────────
-      // If reference image exists → use gpt-image-1 edit (sees the reference)
-      // Otherwise → use DALL-E 3 generation
+      // ── Step 2: Generate background only via DALL-E 3 ────────────
+      // Analyze reference image colors to build accurate background prompt
+      const analyzeRefColors = (refImage) => new Promise((resolve) => {
+        if (!refImage) { resolve(null); return; }
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = 50; c.height = 50;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(img, 0, 0, 50, 50);
+          // Sample corners and edges for background color
+          const samples = [[2,2],[47,2],[2,47],[47,47],[25,2],[2,25],[47,25],[25,47]];
+          let r=0,g=0,b=0;
+          samples.forEach(([x,y]) => {
+            const d = ctx.getImageData(x,y,1,1).data;
+            r+=d[0]; g+=d[1]; b+=d[2];
+          });
+          r=Math.round(r/samples.length);
+          g=Math.round(g/samples.length);
+          b=Math.round(b/samples.length);
+          const brightness = (r+g+b)/3;
+          let colorDesc = brightness > 220 ? "very light gray to white gradient"
+            : brightness > 180 ? "light gray gradient"
+            : brightness > 120 ? "medium gray"
+            : brightness > 60  ? "dark gray"
+            : "very dark, almost black";
+          resolve({ r, g, b, brightness, colorDesc });
+        };
+        img.onerror = () => resolve(null);
+        img.src = refImage.preview;
+      });
+
       const generateBackground = async (prompt, size, refImage) => {
         const safeSize = (size === "1536x1024" || size === "1024x1536") ? size : "1024x1024";
 
+        // Analyze reference if available
+        const refColors = await analyzeRefColors(refImage);
+
         const bgPrompt = [
-          refImage
-            ? "Create a product photography background that exactly matches the style, lighting, colors and mood of the reference image."
-            : "Empty product photography background.",
-          "IMPORTANT: The background must be completely empty — absolutely NO product, NO objects, NO props, NO people, NO text.",
-          "Just the background environment: surface, lighting, atmosphere only.",
+          "Product photography background — completely empty, no product, no objects, no props, no people, no text.",
+          refColors
+            ? `Background color: ${refColors.colorDesc}. Simple clean gradient background, smooth and minimal, exactly like a professional product photo studio.`
+            : "",
           prompt,
-          "Photorealistic, ultra high quality, professional studio photography background.",
+          "Simple, clean, minimal studio background. No creative elements. No geometric shapes. No patterns. No reflections in background.",
+          "Photorealistic, ultra high quality.",
         ].filter(Boolean).join(" ");
 
-        if (refImage) {
-          // Use gpt-image-1 edit so the model actually SEES the reference
-          const refBlob = refImage.file
-            ? refImage.file
-            : await (async () => {
-                const r = await fetch(refImage.preview); return await r.blob();
-              })();
-          const squarePng = await fileToSquarePng(refBlob instanceof File ? refBlob : new File([refBlob], "ref.png", { type: "image/png" }));
-          const fd = new FormData();
-          fd.append("model", "gpt-image-1");
-          fd.append("image[]", squarePng, "reference.png");
-          fd.append("prompt", bgPrompt);
-          fd.append("n", "1");
-          fd.append("size", safeSize);
-          const resp = await fetch("https://api.openai.com/v1/images/edits", {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${apiKeys.openai}` },
-            body: fd,
-          });
-          const data = await resp.json();
-          if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
-          if (data.data?.[0]?.url) {
-            // fallback: fetch via proxy if needed
-            const r2 = await fetch(data.data[0].url);
-            const b = await r2.blob();
-            return await new Promise(res => { const fr = new FileReader(); fr.onload = e => res(e.target.result); fr.readAsDataURL(b); });
-          }
-          throw new Error(data.error?.message || "No background from reference");
-        } else {
-          // No reference — use DALL-E 3 with strict empty-background prompt
-          const resp = await fetch("https://api.openai.com/v1/images/generations", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKeys.openai}` },
-            body: JSON.stringify({ model: "dall-e-3", prompt: bgPrompt, n: 1, size: safeSize, quality: "hd", response_format: "b64_json" }),
-          });
-          const data = await resp.json();
-          if (!data.data?.[0]?.b64_json) throw new Error(data.error?.message || "No background generated");
-          return `data:image/png;base64,${data.data[0].b64_json}`;
-        }
+        const resp = await fetch("https://api.openai.com/v1/images/generations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKeys.openai}` },
+          body: JSON.stringify({ model: "dall-e-3", prompt: bgPrompt, n: 1, size: safeSize, quality: "hd", response_format: "b64_json" }),
+        });
+        const data = await resp.json();
+        if (!data.data?.[0]?.b64_json) throw new Error(data.error?.message || "No background generated");
+        return `data:image/png;base64,${data.data[0].b64_json}`;
       };
 
       // ── Step 3: Composite product on background — pure Canvas, no AI touch ──
