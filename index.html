@@ -421,6 +421,11 @@
       const [showNewCampaign, setShowNewCampaign] = useState(false);
       const refInputRef = useRef();
 
+      // Reference image state
+      const [referenceImage, setReferenceImage]   = useState(null);
+      const [showRefPicker, setShowRefPicker]     = useState(false);
+      const refUploadInput = useRef();
+
       const set = (key) => (val) => setSettings(p => ({ ...p,[key]:val }));
       const handleFiles = (files) => setImages(prev => [...prev, ...files.map(f => ({ file:f, name:f.name, preview:URL.createObjectURL(f), status:null }))]);
       const handleRefFiles = (files) => {
@@ -442,31 +447,143 @@
         setSettings({ background:p.background, lighting:p.lighting, angle:p.angle, sharpness:p.sharpness, shadow:p.shadow, contrast:p.contrast||"רגיל", style:p.style, aspect:p.aspect, extraPrompt:p.extraPrompt||"" });
         setActiveTab(0);
       };
+      // Aspect ratio → output size mapping for gpt-image-1
+      const ASPECT_TO_SIZE = {
+        "1:1 (ריבועי)":       "1024x1024",
+        "4:3 (סטנדרט)":       "1536x1024",
+        "16:9 (רחב)":         "1536x1024",
+        "2:3 (פורטרט)":       "1024x1536",
+        "3:4 (פורטרט רחב)":   "1024x1536",
+        "4:5 (אינסטגרם)":     "1024x1536",
+      };
+
+      // Convert image to square 1024x1024 PNG with transparent padding
+      // (OpenAI edit API requires square input — we pad with transparency)
+      const fileToSquarePng = (file) => new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          // Use 1024 as base size for best quality
+          const SIZE = 1024;
+          const canvas = document.createElement("canvas");
+          canvas.width = SIZE; canvas.height = SIZE;
+          const ctx = canvas.getContext("2d");
+          ctx.clearRect(0, 0, SIZE, SIZE);
+
+          // Scale image to fit inside 1024x1024 keeping aspect ratio
+          const scale = Math.min(SIZE / img.width, SIZE / img.height);
+          const sw = img.width  * scale;
+          const sh = img.height * scale;
+          const x  = (SIZE - sw) / 2;
+          const y  = (SIZE - sh) / 2;
+
+          ctx.drawImage(img, x, y, sw, sh);
+          canvas.toBlob(
+            blob => blob ? resolve(blob) : reject(new Error("Canvas toBlob failed")),
+            "image/png"
+          );
+        };
+        img.onerror = () => reject(new Error("Image load failed"));
+        img.src = URL.createObjectURL(file);
+      });
+
       const handleProcess = async () => {
         if (!images.length) return;
         if (!apiKeys[selectedAI]) { setShowApiModal(true); return; }
         setProcessing(true);
         const prompt = buildPrompt(settings);
         const newResults = [];
-        const imageModelToUse = OPENAI_MODELS.find(m=>m.id===selectedModel)?.imageModel||"dall-e-3";
+
         for (let i=0; i<images.length; i++) {
           setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"processing" }:img));
-          await new Promise(r => setTimeout(r,700+Math.random()*400));
+
           if (selectedAI==="openai") {
             try {
-              const resp = await fetch("https://api.openai.com/v1/images/generations", {
-                method:"POST",
-                headers:{ "Content-Type":"application/json","Authorization":`Bearer ${apiKeys.openai}` },
-                body:JSON.stringify({ model:imageModelToUse, prompt:prompt+". product on white background, replace background according to style", n:1, size:"1024x1024" })
+              // Build the edit prompt — keep exact product, change only background/style
+              const refNote = referenceImage
+                ? `Match the visual style, mood, lighting and background treatment of the reference image as closely as possible.`
+                : "";
+              const editPrompt = [
+                "Keep the exact same product in the image — do not change its shape, color, logo, or any detail.",
+                "Only change the background and lighting.",
+                refNote,
+                `Background: ${settings.background}.`,
+                `Lighting: ${settings.lighting}.`,
+                `Shadow: ${settings.shadow}.`,
+                `Style: ${settings.style}.`,
+                `Contrast: ${settings.contrast}.`,
+                settings.extraPrompt || "",
+                "Professional product photography, photorealistic, ultra high quality, commercial photography.",
+              ].filter(Boolean).join(" ");
+
+              // Convert product image to square PNG
+              const pngBlob = await fileToSquarePng(images[i].file);
+
+              const formData = new FormData();
+              formData.append("model", "gpt-image-1");
+              // Product image
+              formData.append("image[]", pngBlob, "product.png");
+              // Reference image — if selected, send as second image for style guidance
+              if (referenceImage) {
+                let refBlob = null;
+                if (referenceImage.file) {
+                  // Uploaded file
+                  refBlob = await fileToSquarePng(referenceImage.file);
+                } else if (referenceImage.preview) {
+                  // From library (object URL) — fetch and convert
+                  refBlob = await new Promise((res, rej) => {
+                    const img = new Image();
+                    img.onload = () => {
+                      const c = document.createElement("canvas");
+                      c.width = 1024; c.height = 1024;
+                      const ctx = c.getContext("2d");
+                      ctx.clearRect(0,0,1024,1024);
+                      const scale = Math.min(1024/img.width, 1024/img.height);
+                      const sw = img.width*scale, sh = img.height*scale;
+                      ctx.drawImage(img, (1024-sw)/2, (1024-sh)/2, sw, sh);
+                      c.toBlob(b => b ? res(b) : rej(new Error("ref blob failed")), "image/png");
+                    };
+                    img.onerror = rej;
+                    img.src = referenceImage.preview;
+                  });
+                }
+                if (refBlob) formData.append("image[]", refBlob, "reference.png");
+              }
+              formData.append("prompt", editPrompt);
+              formData.append("n", "1");
+              const outputSize = ASPECT_TO_SIZE[settings.aspect] || "1024x1024";
+              formData.append("size", outputSize);
+
+              const resp = await fetch("https://api.openai.com/v1/images/edits", {
+                method: "POST",
+                headers: { "Authorization": `Bearer ${apiKeys.openai}` },
+                body: formData
               });
+
               const data = await resp.json();
+
+              // gpt-image-1 returns base64, dall-e-2 edits return URL
+              let resultUrl = null;
               if (data.data?.[0]?.url) {
-                newResults.push({ original:images[i].preview, result:data.data[0].url, name:images[i].name, model:selectedModel });
+                resultUrl = data.data[0].url;
+              } else if (data.data?.[0]?.b64_json) {
+                resultUrl = `data:image/png;base64,${data.data[0].b64_json}`;
+              }
+
+              if (resultUrl) {
+                newResults.push({ original:images[i].preview, result:resultUrl, name:images[i].name, model:"gpt-image-1" });
                 setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"done" }:img));
-              } else throw new Error();
-            } catch { setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"error" }:img)); }
+              } else {
+                console.error("API error:", data);
+                throw new Error(data.error?.message || "No result");
+              }
+            } catch(err) {
+              console.error("Processing error:", err);
+              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"error" }:img));
+            }
           } else {
-            newResults.push({ original:images[i].preview, result:images[i].preview, name:images[i].name, simulated:true, model:selectedModel });
+            // Other providers — placeholder
+            await new Promise(r => setTimeout(r, 800));
+            newResults.push({ original:images[i].preview, result:images[i].preview, name:images[i].name, simulated:true, model:selectedAI });
             setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"done" }:img));
           }
         }
@@ -657,7 +774,69 @@
                   </div>
                 </div>
                 <div style={{ width:296, padding:"18px 14px", overflowY:"auto", flexShrink:0, background:C.panelBg, borderLeft:`1px solid ${C.panelBorder}` }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+
+                  {/* ── Reference image picker ── */}
+                  <div style={{ marginBottom:14 }}>
+                    <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:2, textTransform:"uppercase", marginBottom:8 }}>תמונת רפרנס</div>
+
+                    {referenceImage ? (
+                      /* Selected reference — show thumbnail + clear */
+                      <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", background:"#fff", borderRadius:8, border:`1.5px solid ${C.green}` }}>
+                        <img src={referenceImage.preview} alt="ref" style={{ width:44, height:44, objectFit:"cover", borderRadius:5, flexShrink:0 }} />
+                        <div style={{ flex:1, overflow:"hidden" }}>
+                          <div style={{ fontSize:10, fontWeight:600, color:C.greenDark }}>רפרנס פעיל</div>
+                          <div style={{ fontSize:9, color:C.muted, textOverflow:"ellipsis", overflow:"hidden", whiteSpace:"nowrap" }}>{referenceImage.name}</div>
+                        </div>
+                        <button onClick={()=>setReferenceImage(null)} style={{ fontSize:12, color:C.muted, background:"none", border:"none", cursor:"pointer", flexShrink:0 }}>✕</button>
+                      </div>
+                    ) : (
+                      /* Not selected — show picker button */
+                      <button onClick={()=>setShowRefPicker(v=>!v)} style={{ width:"100%", padding:"9px 12px", borderRadius:8, border:`1px dashed ${C.inputBorder}`, background:"#fff", color:C.muted, fontSize:10, cursor:"pointer", fontFamily:"Rubik", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                        <span style={{ fontSize:14 }}>◈</span> בחר תמונת רפרנס
+                      </button>
+                    )}
+
+                    {/* Ref picker dropdown */}
+                    {showRefPicker && (
+                      <div style={{ marginTop:8, background:"#fff", borderRadius:10, border:`1px solid ${C.panelBorder}`, boxShadow:"0 4px 20px rgba(0,0,0,0.1)", overflow:"hidden" }}>
+                        <div style={{ padding:"10px 12px", borderBottom:`1px solid ${C.panelBorder}` }}>
+                          <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:1, marginBottom:8 }}>בחר מהספרייה</div>
+                          {campaigns.every(c=>c.refs.length===0) ? (
+                            <div style={{ fontSize:10, color:C.muted, padding:"8px 0" }}>הספרייה ריקה — העלי תמונות בטאב ספריית רפרנס</div>
+                          ) : (
+                            <div style={{ maxHeight:180, overflowY:"auto" }}>
+                              {campaigns.map(c => c.refs.map(ref => (
+                                <div key={ref.id} onClick={()=>{ setReferenceImage({ preview:ref.preview, file:null, name:ref.note||ref.name }); setShowRefPicker(false); }}
+                                  style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 4px", cursor:"pointer", borderRadius:5, marginBottom:3 }}
+                                  onMouseEnter={e=>e.currentTarget.style.background=C.panelBg}
+                                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                                  <img src={ref.preview} alt="" style={{ width:36, height:36, objectFit:"cover", borderRadius:4, flexShrink:0 }} />
+                                  <div>
+                                    <div style={{ fontSize:10, color:C.bodyText, fontWeight:500 }}>{ref.note || ref.name || "ללא שם"}</div>
+                                    <div style={{ fontSize:8, color:C.muted }}>{c.name}</div>
+                                  </div>
+                                </div>
+                              )))}
+                            </div>
+                          )}
+                        </div>
+                        {/* Upload new reference */}
+                        <div style={{ padding:"10px 12px" }}>
+                          <button onClick={()=>refUploadInput.current?.click()} style={{ width:"100%", padding:"7px 0", borderRadius:6, border:`1px solid ${C.green}`, background:C.greenLight, color:C.greenDark, fontSize:10, fontWeight:600, cursor:"pointer", fontFamily:"Rubik" }}>
+                            + העלה רפרנס חדש
+                          </button>
+                          <input ref={refUploadInput} type="file" accept="image/*" style={{ display:"none" }}
+                            onChange={e => {
+                              const f = e.target.files[0];
+                              if (f) { setReferenceImage({ preview:URL.createObjectURL(f), file:f, name:f.name }); setShowRefPicker(false); }
+                            }} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ── Process button ── */}
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
                     <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:2, textTransform:"uppercase" }}>תוצאות</div>
                     <button onClick={handleProcess} disabled={processing||!images.length} className={images.length&&!processing?"btn-green":""} style={{ ...greenBtn, background:images.length&&!processing?C.green:C.panelBorder, color:images.length&&!processing?"#000":C.muted, cursor:images.length?"pointer":"default", padding:"7px 16px" }}>
                       {processing?"↻ מעבד...":`▶ עבד${images.length?` (${images.length})`:""}`}
