@@ -515,23 +515,61 @@
         return await resp.blob();
       };
 
-      // ── Step 2: Generate background only via DALL-E 3 ────────────
-      const generateBackground = async (prompt, size) => {
+      // ── Step 2: Generate background only ────────────────────────
+      // If reference image exists → use gpt-image-1 edit (sees the reference)
+      // Otherwise → use DALL-E 3 generation
+      const generateBackground = async (prompt, size, refImage) => {
         const safeSize = (size === "1536x1024" || size === "1024x1536") ? size : "1024x1024";
+
         const bgPrompt = [
-          "Empty product photography background — NO product, NO objects, NO people.",
+          refImage
+            ? "Create a product photography background that exactly matches the style, lighting, colors and mood of the reference image."
+            : "Empty product photography background.",
+          "IMPORTANT: The background must be completely empty — absolutely NO product, NO objects, NO props, NO people, NO text.",
+          "Just the background environment: surface, lighting, atmosphere only.",
           prompt,
-          "Photorealistic studio background, ultra high quality.",
+          "Photorealistic, ultra high quality, professional studio photography background.",
         ].filter(Boolean).join(" ");
-        const resp = await fetch("https://api.openai.com/v1/images/generations", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKeys.openai}` },
-          body: JSON.stringify({ model: "dall-e-3", prompt: bgPrompt, n: 1, size: safeSize, quality: "hd", response_format: "b64_json" }),
-        });
-        const data = await resp.json();
-        if (!data.data?.[0]?.b64_json) throw new Error(data.error?.message || "No background generated");
-        // Return as data URL — no CORS issues when drawing on Canvas
-        return `data:image/png;base64,${data.data[0].b64_json}`;
+
+        if (refImage) {
+          // Use gpt-image-1 edit so the model actually SEES the reference
+          const refBlob = refImage.file
+            ? refImage.file
+            : await (async () => {
+                const r = await fetch(refImage.preview); return await r.blob();
+              })();
+          const squarePng = await fileToSquarePng(refBlob instanceof File ? refBlob : new File([refBlob], "ref.png", { type: "image/png" }));
+          const fd = new FormData();
+          fd.append("model", "gpt-image-1");
+          fd.append("image[]", squarePng, "reference.png");
+          fd.append("prompt", bgPrompt);
+          fd.append("n", "1");
+          fd.append("size", safeSize);
+          const resp = await fetch("https://api.openai.com/v1/images/edits", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${apiKeys.openai}` },
+            body: fd,
+          });
+          const data = await resp.json();
+          if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
+          if (data.data?.[0]?.url) {
+            // fallback: fetch via proxy if needed
+            const r2 = await fetch(data.data[0].url);
+            const b = await r2.blob();
+            return await new Promise(res => { const fr = new FileReader(); fr.onload = e => res(e.target.result); fr.readAsDataURL(b); });
+          }
+          throw new Error(data.error?.message || "No background from reference");
+        } else {
+          // No reference — use DALL-E 3 with strict empty-background prompt
+          const resp = await fetch("https://api.openai.com/v1/images/generations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKeys.openai}` },
+            body: JSON.stringify({ model: "dall-e-3", prompt: bgPrompt, n: 1, size: safeSize, quality: "hd", response_format: "b64_json" }),
+          });
+          const data = await resp.json();
+          if (!data.data?.[0]?.b64_json) throw new Error(data.error?.message || "No background generated");
+          return `data:image/png;base64,${data.data[0].b64_json}`;
+        }
       };
 
       // ── Step 3: Composite product on background — pure Canvas, no AI touch ──
@@ -659,7 +697,7 @@
 
               // ── Step 2: Generate new background ──
               setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"יוצר רקע חדש..." }:img));
-              const bgUrl = await generateBackground(bgPrompt, outputSize);
+              const bgUrl = await generateBackground(bgPrompt, outputSize, referenceImage);
 
               // ── Step 3: Composite + Canvas shadows (product pixels untouched) ──
               setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"מרכיב תמונה וצללים..." }:img));
