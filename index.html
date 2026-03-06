@@ -619,48 +619,29 @@
             // ── Draw product — ORIGINAL PIXELS, untouched ──
             ctx.drawImage(productImg, px, py, pw, ph);
 
-            // ── DROP SHADOW — blurred dark silhouette of product ──
+            // ── DROP SHADOW using ctx.shadow* API — reliable on all backgrounds ──
             if (shadowStyle !== "ללא צל") {
-              const alpha = shadowStyle === "צל דרמטי" ? 0.65
-                          : shadowStyle === "צל נפח"   ? 0.50
-                          : shadowStyle === "צל עדין"  ? 0.30
-                          : shadowStyle === "רפלקציה (ראי)" ? 0.20 : 0.35;
-              const blurR = shadowStyle === "צל דרמטי" ? pw*0.12
-                          : shadowStyle === "צל נפח"   ? pw*0.09
-                          : pw * 0.06;
-              const offX = 0;
-              const offY = pw * 0.05 + Math.max(0, shadowOffset) * 0.5;
+              const shadowAlpha = shadowStyle === "צל דרמטי" ? 0.75
+                                : shadowStyle === "צל נפח"   ? 0.55
+                                : shadowStyle === "צל עדין"  ? 0.35
+                                : shadowStyle === "רפלקציה (ראי)" ? 0.25
+                                : 0.40;
+              const blurR = shadowStyle === "צל דרמטי" ? pw * 0.14
+                          : shadowStyle === "צל נפח"   ? pw * 0.10
+                          : pw * 0.07;
+              const offY = pw * 0.06 + Math.max(0, shadowOffset) * 0.6;
 
-              // Step 1: draw product on temp canvas with black tint
-              const sc = document.createElement("canvas");
-              sc.width = outW; sc.height = outH;
-              const sCtx = sc.getContext("2d");
-              // Draw product shifted down
-              sCtx.drawImage(productImg, px + offX, py + offY, pw, ph);
-              // Tint to black using destination-in + black fill
-              sCtx.globalCompositeOperation = "source-atop";
-              sCtx.fillStyle = `rgba(0,0,0,${alpha})`;
-              sCtx.fillRect(0, 0, outW, outH);
+              // Redraw product with shadow properties set
+              ctx.save();
+              ctx.shadowColor   = `rgba(0,0,0,${shadowAlpha})`;
+              ctx.shadowBlur    = blurR;
+              ctx.shadowOffsetX = 0;
+              ctx.shadowOffsetY = offY;
+              ctx.drawImage(productImg, px, py, pw, ph);
+              ctx.restore();
 
-              // Step 2: draw blurred black silhouette onto main canvas BEFORE product
-              // We need to insert it below the already-drawn product, so we use a composite canvas
-              const finalC = document.createElement("canvas");
-              finalC.width = outW; finalC.height = outH;
-              const fCtx = finalC.getContext("2d");
-              // Draw background
-              fCtx.drawImage(canvas, 0, 0);
-              // Draw blurred shadow
-              fCtx.save();
-              fCtx.filter = `blur(${Math.round(blurR)}px)`;
-              fCtx.drawImage(sc, 0, 0);
-              fCtx.filter = "none";
-              fCtx.restore();
-              // Draw product clean on top
-              fCtx.drawImage(productImg, px, py, pw, ph);
-
-              // Replace main canvas content
-              ctx.clearRect(0, 0, outW, outH);
-              ctx.drawImage(finalC, 0, 0);
+              // Redraw product clean on top (no shadow) to keep crisp edges
+              ctx.drawImage(productImg, px, py, pw, ph);
 
               // ── Reflection (ראי only) ──
               if (shadowStyle === "רפלקציה (ראי)") {
