@@ -396,6 +396,11 @@
         });
       }, []);
 
+      // Persist API keys to localStorage
+      useEffect(() => {
+        try { localStorage.setItem("samora_api_keys", JSON.stringify(apiKeys)); } catch {}
+      }, [apiKeys]);
+
       const handleLogout = () => fb.signOut(fb.auth);
 
       const [activeTab, setActiveTab]         = useState(0);
@@ -404,7 +409,12 @@
       const [selectedAI, setSelectedAI]       = useState("openai");
       const [selectedModel, setSelectedModel] = useState("dall-e-3");
       const [showModelPicker, setShowModelPicker] = useState(false);
-      const [apiKeys, setApiKeys]             = useState({ openai:"", stability:"", replicate:"" });
+      const [apiKeys, setApiKeys] = useState(() => {
+        try {
+          const saved = localStorage.getItem("samora_api_keys");
+          return saved ? JSON.parse(saved) : { openai:"", stability:"", replicate:"" };
+        } catch { return { openai:"", stability:"", replicate:"" }; }
+      });
       const [showApiModal, setShowApiModal]   = useState(false);
       const [processing, setProcessing]       = useState(false);
       const [profiles, setProfiles]           = useState(INITIAL_PROFILES);
@@ -447,6 +457,8 @@
         setSettings({ background:p.background, lighting:p.lighting, angle:p.angle, sharpness:p.sharpness, shadow:p.shadow, contrast:p.contrast||"רגיל", style:p.style, aspect:p.aspect, extraPrompt:p.extraPrompt||"" });
         setActiveTab(0);
       };
+      const REMOVEBG_API_KEY = "NSAfyd5Z6hmSGk7Ud2RPUq8u";
+
       // Aspect ratio → output size mapping for gpt-image-1
       const ASPECT_TO_SIZE = {
         "1:1 (ריבועי)":       "1024x1024",
@@ -486,6 +498,143 @@
         img.src = URL.createObjectURL(file);
       });
 
+      // ── Step 1: Remove background via remove.bg ──────────────────
+      const removeBackground = async (file) => {
+        const fd = new FormData();
+        fd.append("image_file", file);
+        fd.append("size", "auto");
+        const resp = await fetch("https://api.remove.bg/v1.0/removebg", {
+          method: "POST",
+          headers: { "X-Api-Key": REMOVEBG_API_KEY },
+          body: fd,
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(()=>({}));
+          throw new Error("remove.bg: " + (err?.errors?.[0]?.title || resp.status));
+        }
+        return await resp.blob();
+      };
+
+      // ── Step 2: Generate background only via DALL-E 3 ────────────
+      const generateBackground = async (prompt, size) => {
+        const safeSize = (size === "1536x1024" || size === "1024x1536") ? size : "1024x1024";
+        const bgPrompt = [
+          "Empty product photography background — NO product, NO objects, NO people.",
+          prompt,
+          "Photorealistic studio background, ultra high quality.",
+        ].filter(Boolean).join(" ");
+        const resp = await fetch("https://api.openai.com/v1/images/generations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKeys.openai}` },
+          body: JSON.stringify({ model: "dall-e-3", prompt: bgPrompt, n: 1, size: safeSize, quality: "hd" }),
+        });
+        const data = await resp.json();
+        if (!data.data?.[0]?.url) throw new Error(data.error?.message || "No background generated");
+        return data.data[0].url;
+      };
+
+      // ── Step 3: Composite product cutout on background ───────────
+      const compositeImages = (bgUrl, productBlob, outputSize) => new Promise((resolve, reject) => {
+        const [outW, outH] = outputSize.split("x").map(Number);
+        const canvas = document.createElement("canvas");
+        canvas.width = outW; canvas.height = outH;
+        const ctx = canvas.getContext("2d");
+
+        const bgImg = new Image();
+        bgImg.crossOrigin = "anonymous";
+        bgImg.onload = () => {
+          ctx.drawImage(bgImg, 0, 0, outW, outH);
+          const productImg = new Image();
+          productImg.onload = () => {
+            const maxW = outW * 0.78, maxH = outH * 0.78;
+            const scale = Math.min(maxW / productImg.width, maxH / productImg.height);
+            const pw = productImg.width * scale, ph = productImg.height * scale;
+            const px = (outW - pw) / 2, py = (outH - ph) / 2;
+
+            // Draw subtle drop shadow before product
+            ctx.save();
+            ctx.shadowColor = "rgba(0,0,0,0.38)";
+            ctx.shadowBlur = 38;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = pw * 0.06;
+            ctx.drawImage(productImg, px, py, pw, ph);
+            ctx.restore();
+
+            // Draw product clean on top
+            ctx.drawImage(productImg, px, py, pw, ph);
+
+            // Draw subtle ground reflection (mirror fade)
+            const bottomY = py + ph;
+            const reflH = ph * 0.22;
+            if (bottomY + reflH < outH) {
+              ctx.save();
+              ctx.translate(px, bottomY);
+              ctx.scale(1, -1);
+              ctx.drawImage(productImg, 0, -ph, pw, ph);
+              ctx.scale(1, -1);
+              // Fade the reflection with gradient
+              const grad = ctx.createLinearGradient(0, 0, 0, reflH);
+              grad.addColorStop(0, "rgba(255,255,255,0)");
+              grad.addColorStop(1, "rgba(255,255,255,0.88)");
+              ctx.fillStyle = grad;
+              ctx.fillRect(0, 0, pw, reflH);
+              ctx.restore();
+            }
+
+            resolve(canvas.toDataURL("image/png"));
+          };
+          productImg.onerror = reject;
+          productImg.src = URL.createObjectURL(productBlob);
+        };
+        bgImg.onerror = reject;
+        bgImg.src = bgUrl;
+      });
+
+      // ── Step 4: AI blend pass — make product look naturally lit ──
+      const blendWithAI = async (compositeDataUrl, shadowStyle, lighting, outputSize) => {
+        // Convert dataURL to blob
+        const resp0 = await fetch(compositeDataUrl);
+        const compositeBlob = await resp0.blob();
+        const pngBlob = await new Promise((res, rej) => {
+          const img = new Image();
+          img.onload = () => {
+            const [w, h] = outputSize.split("x").map(Number);
+            const c = document.createElement("canvas");
+            c.width = w; c.height = h;
+            c.getContext("2d").drawImage(img, 0, 0, w, h);
+            c.toBlob(b => b ? res(b) : rej(new Error("blend toBlob")), "image/png");
+          };
+          img.src = compositeDataUrl;
+        });
+
+        const blendPrompt = [
+          "This is a product placed on a background. Make it look like a real professional photo.",
+          "Keep the product EXACTLY as-is — same shape, color, logo, texture, every detail unchanged.",
+          `Add realistic ${shadowStyle} shadows and ${lighting} lighting that match the background naturally.`,
+          "The product should look physically present in the scene, not pasted. Seamless integration.",
+          "Professional commercial product photography. Photorealistic. Ultra high quality.",
+        ].join(" ");
+
+        const fd = new FormData();
+        fd.append("model", "gpt-image-1");
+        fd.append("image[]", pngBlob, "composite.png");
+        fd.append("prompt", blendPrompt);
+        fd.append("n", "1");
+        fd.append("size", outputSize);
+
+        const resp = await fetch("https://api.openai.com/v1/images/edits", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${apiKeys.openai}` },
+          body: fd,
+        });
+        const data = await resp.json();
+        if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
+        if (data.data?.[0]?.url) return data.data[0].url;
+        // If blend fails, return the composite as fallback
+        console.warn("Blend pass failed, using composite:", data.error?.message);
+        return compositeDataUrl;
+      };
+
       const handleProcess = async () => {
         if (!images.length) return;
         if (!apiKeys[selectedAI]) { setShowApiModal(true); return; }
@@ -498,87 +647,44 @@
 
           if (selectedAI==="openai") {
             try {
-              // Build the edit prompt — keep exact product, change only background/style
+              const outputSize = ASPECT_TO_SIZE[settings.aspect] || "1024x1024";
+
+              // Build background generation prompt
               const refNote = referenceImage
-                ? `Match the visual style, mood, lighting and background treatment of the reference image as closely as possible.`
+                ? "Match the visual style, mood, color palette and background treatment of the reference style."
                 : "";
-              const editPrompt = [
-                "Keep the exact same product in the image — do not change its shape, color, logo, or any detail.",
-                "Only change the background and lighting.",
+              const bgPrompt = [
                 refNote,
                 `Background: ${settings.background}.`,
                 `Lighting: ${settings.lighting}.`,
-                `Shadow: ${settings.shadow}.`,
-                `Style: ${settings.style}.`,
+                `Shadow style: ${settings.shadow}.`,
+                `Visual style: ${settings.style}.`,
                 `Contrast: ${settings.contrast}.`,
                 settings.extraPrompt || "",
-                "Professional product photography, photorealistic, ultra high quality, commercial photography.",
               ].filter(Boolean).join(" ");
 
-              // Convert product image to square PNG
-              const pngBlob = await fileToSquarePng(images[i].file);
+              // ── Step 1: Remove background from product image ──
+              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"processing", statusText:"מסיר רקע..." }:img));
+              const cutoutBlob = await removeBackground(images[i].file);
 
-              const formData = new FormData();
-              formData.append("model", "gpt-image-1");
-              // Product image
-              formData.append("image[]", pngBlob, "product.png");
-              // Reference image — if selected, send as second image for style guidance
-              if (referenceImage) {
-                let refBlob = null;
-                if (referenceImage.file) {
-                  // Uploaded file
-                  refBlob = await fileToSquarePng(referenceImage.file);
-                } else if (referenceImage.preview) {
-                  // From library (object URL) — fetch and convert
-                  refBlob = await new Promise((res, rej) => {
-                    const img = new Image();
-                    img.onload = () => {
-                      const c = document.createElement("canvas");
-                      c.width = 1024; c.height = 1024;
-                      const ctx = c.getContext("2d");
-                      ctx.clearRect(0,0,1024,1024);
-                      const scale = Math.min(1024/img.width, 1024/img.height);
-                      const sw = img.width*scale, sh = img.height*scale;
-                      ctx.drawImage(img, (1024-sw)/2, (1024-sh)/2, sw, sh);
-                      c.toBlob(b => b ? res(b) : rej(new Error("ref blob failed")), "image/png");
-                    };
-                    img.onerror = rej;
-                    img.src = referenceImage.preview;
-                  });
-                }
-                if (refBlob) formData.append("image[]", refBlob, "reference.png");
-              }
-              formData.append("prompt", editPrompt);
-              formData.append("n", "1");
-              const outputSize = ASPECT_TO_SIZE[settings.aspect] || "1024x1024";
-              formData.append("size", outputSize);
+              // ── Step 2: Generate new background ──
+              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"יוצר רקע חדש..." }:img));
+              const bgUrl = await generateBackground(bgPrompt, outputSize);
 
-              const resp = await fetch("https://api.openai.com/v1/images/edits", {
-                method: "POST",
-                headers: { "Authorization": `Bearer ${apiKeys.openai}` },
-                body: formData
-              });
+              // ── Step 3: Composite product on background ──
+              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"מרכיב תמונה..." }:img));
+              const compositeUrl = await compositeImages(bgUrl, cutoutBlob, outputSize);
 
-              const data = await resp.json();
+              // ── Step 4: AI blend — add natural shadows & lighting ──
+              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"מוסיף צללים ואור..." }:img));
+              const resultUrl = await blendWithAI(compositeUrl, settings.shadow, settings.lighting, outputSize);
 
-              // gpt-image-1 returns base64, dall-e-2 edits return URL
-              let resultUrl = null;
-              if (data.data?.[0]?.url) {
-                resultUrl = data.data[0].url;
-              } else if (data.data?.[0]?.b64_json) {
-                resultUrl = `data:image/png;base64,${data.data[0].b64_json}`;
-              }
+              newResults.push({ original:images[i].preview, result:resultUrl, name:images[i].name, model:"inpainting" });
+              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"done", statusText:"" }:img));
 
-              if (resultUrl) {
-                newResults.push({ original:images[i].preview, result:resultUrl, name:images[i].name, model:"gpt-image-1" });
-                setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"done" }:img));
-              } else {
-                console.error("API error:", data);
-                throw new Error(data.error?.message || "No result");
-              }
             } catch(err) {
               console.error("Processing error:", err);
-              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"error" }:img));
+              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"error", statusText:err.message }:img));
             }
           } else {
             // Other providers — placeholder
