@@ -498,15 +498,6 @@
         img.src = URL.createObjectURL(file);
       });
 
-      // ── Fetch external image bypassing CORS ─────────────────────
-      const fetchImageAsBlob = async (url) => {
-        // Use allorigins proxy to bypass CORS for external images
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-        const resp = await fetch(proxyUrl);
-        if (!resp.ok) throw new Error("Failed to fetch image via proxy");
-        return await resp.blob();
-      };
-
       // ── Step 1: Remove background via remove.bg ──────────────────
       const removeBackground = async (file) => {
         const fd = new FormData();
@@ -535,20 +526,16 @@
         const resp = await fetch("https://api.openai.com/v1/images/generations", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKeys.openai}` },
-          body: JSON.stringify({ model: "dall-e-3", prompt: bgPrompt, n: 1, size: safeSize, quality: "hd" }),
+          body: JSON.stringify({ model: "dall-e-3", prompt: bgPrompt, n: 1, size: safeSize, quality: "hd", response_format: "b64_json" }),
         });
         const data = await resp.json();
-        if (!data.data?.[0]?.url) throw new Error(data.error?.message || "No background generated");
-        return data.data[0].url;
+        if (!data.data?.[0]?.b64_json) throw new Error(data.error?.message || "No background generated");
+        // Return as data URL — no CORS issues when drawing on Canvas
+        return `data:image/png;base64,${data.data[0].b64_json}`;
       };
 
       // ── Step 3: Composite product on background — pure Canvas, no AI touch ──
-      const compositeImages = async (bgUrl, productBlob, shadowStyle, outputSize) => {
-        // Fetch background as blob to avoid CORS issues
-        const bgBlob = await fetchImageAsBlob(bgUrl);
-        const bgObjectUrl = URL.createObjectURL(bgBlob);
-
-        return new Promise((resolve, reject) => {
+      const compositeImages = (bgDataUrl, productBlob, shadowStyle, outputSize) => new Promise((resolve, reject) => {
         const [outW, outH] = outputSize.split("x").map(Number);
         const canvas = document.createElement("canvas");
         canvas.width = outW; canvas.height = outH;
@@ -556,7 +543,6 @@
 
         const bgImg = new Image();
         bgImg.onload = () => {
-          URL.revokeObjectURL(bgObjectUrl);
           // Draw background
           ctx.drawImage(bgImg, 0, 0, outW, outH);
 
@@ -636,9 +622,8 @@
           productImg.src = URL.createObjectURL(productBlob);
         };
         bgImg.onerror = reject;
-        bgImg.src = bgObjectUrl;
-        }); // end Promise
-      }; // end compositeImages
+        bgImg.src = bgDataUrl;
+      });
 
       const handleProcess = async () => {
         if (!images.length) return;
