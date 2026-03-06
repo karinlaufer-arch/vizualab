@@ -398,10 +398,13 @@
         });
       }, []);
 
-      // Persist API keys to localStorage
+      // Persist API keys + saved prompts to localStorage
       useEffect(() => {
         try { localStorage.setItem("samora_api_keys", JSON.stringify(apiKeys)); } catch {}
       }, [apiKeys]);
+      useEffect(() => {
+        try { localStorage.setItem("samora_saved_prompts", JSON.stringify(savedPrompts)); } catch {}
+      }, [savedPrompts]);
 
       const handleLogout = () => fb.signOut(fb.auth);
 
@@ -432,6 +435,15 @@
       const [newCampaignSeason, setNewCampaignSeason] = useState("כללי");
       const [showNewCampaign, setShowNewCampaign] = useState(false);
       const refInputRef = useRef();
+
+      // Free prompt mode state
+      const [promptMode, setPromptMode]           = useState("settings"); // "settings" | "free"
+      const [freePromptText, setFreePromptText]   = useState("");
+      const [savedPrompts, setSavedPrompts]       = useState(() => {
+        try { return JSON.parse(localStorage.getItem("samora_saved_prompts")||"[]"); } catch { return []; }
+      });
+      const [savePromptName, setSavePromptName]   = useState("");
+      const [showSavedPrompts, setShowSavedPrompts] = useState(false);
 
       // Reference image state
       const [referenceImage, setReferenceImage]   = useState(null);
@@ -552,10 +564,29 @@
         "כחול עמוק":      { top:{r:20,g:30,b:70},    bottom:{r:5,g:10,b:40}    },
       };
 
-      const generateBackground = async (prompt, size, refImage, bgSetting) => {
+      const generateBackground = async (prompt, size, refImage, bgSetting, useDallE=false) => {
         const [outW, outH] = size.split("x").map(Number);
+        const safeSize = (size === "1536x1024" || size === "1024x1536") ? size : "1024x1024";
 
-        // Get colors — from reference or from settings
+        if (useDallE) {
+          // ── Free prompt mode: generate real background with DALL-E 3 ──
+          const bgPrompt = [
+            "Empty product photography background — NO product, NO objects, NO people, NO text.",
+            prompt,
+            "Photorealistic, ultra high quality.",
+          ].filter(Boolean).join(" ");
+
+          const resp = await fetch("https://api.openai.com/v1/images/generations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKeys.openai}` },
+            body: JSON.stringify({ model: "dall-e-3", prompt: bgPrompt, n: 1, size: safeSize, quality: "hd", response_format: "b64_json" }),
+          });
+          const data = await resp.json();
+          if (!data.data?.[0]?.b64_json) throw new Error(data.error?.message || "No background generated");
+          return `data:image/png;base64,${data.data[0].b64_json}`;
+        }
+
+        // ── Settings mode: pure Canvas gradient ──
         let colors = null;
         if (refImage?.preview) {
           colors = await sampleImageColors(refImage.preview);
@@ -566,12 +597,10 @@
 
         const { top, bottom } = colors;
 
-        // Draw gradient on Canvas
         const canvas = document.createElement("canvas");
         canvas.width = outW; canvas.height = outH;
         const ctx = canvas.getContext("2d");
 
-        // Main gradient top → bottom (slightly lighter on top, darker on bottom)
         const grad = ctx.createLinearGradient(0, 0, 0, outH);
         grad.addColorStop(0,    `rgb(${Math.min(top.r+15,255)},${Math.min(top.g+15,255)},${Math.min(top.b+15,255)})`);
         grad.addColorStop(0.45, `rgb(${top.r},${top.g},${top.b})`);
@@ -579,7 +608,6 @@
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, outW, outH);
 
-        // Subtle center vignette highlight (studio light feel)
         const brightness = (top.r + top.g + top.b) / 3;
         if (brightness > 60) {
           const radGrad = ctx.createRadialGradient(outW/2, outH*0.35, 0, outW/2, outH*0.35, outW*0.6);
@@ -712,26 +740,37 @@
               const outputSize = ASPECT_TO_SIZE[settings.aspect] || "1024x1024";
 
               // Build background generation prompt
-              const refNote = referenceImage
-                ? "Match the visual style, mood, color palette and background treatment of the reference style."
-                : "";
-              const bgPrompt = [
-                refNote,
-                `Background: ${settings.background}.`,
-                `Lighting: ${settings.lighting}.`,
-                `Shadow style: ${settings.shadow}.`,
-                `Visual style: ${settings.style}.`,
-                `Contrast: ${settings.contrast}.`,
-                settings.extraPrompt || "",
-              ].filter(Boolean).join(" ");
+              let bgPrompt = "";
+              let useDallE = false; // whether to use DALL-E for background (free mode) or Canvas gradient (settings mode)
+
+              if (promptMode === "free" && freePromptText.trim()) {
+                // Free prompt mode — send to DALL-E, get real background
+                bgPrompt = freePromptText.trim();
+                useDallE = true;
+              } else {
+                // Settings mode — Canvas gradient
+                const refNote = referenceImage
+                  ? "Match the visual style, mood, color palette and background treatment of the reference style."
+                  : "";
+                bgPrompt = [
+                  refNote,
+                  `Background: ${settings.background}.`,
+                  `Lighting: ${settings.lighting}.`,
+                  `Shadow style: ${settings.shadow}.`,
+                  `Visual style: ${settings.style}.`,
+                  `Contrast: ${settings.contrast}.`,
+                  settings.extraPrompt || "",
+                ].filter(Boolean).join(" ");
+                useDallE = false;
+              }
 
               // ── Step 1: Remove background from product image ──
               setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"processing", statusText:"מסיר רקע..." }:img));
               const cutoutBlob = await removeBackground(images[i].file);
 
               // ── Step 2: Generate new background ──
-              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"בונה רקע..." }:img));
-              const bgUrl = await generateBackground(bgPrompt, outputSize, referenceImage, settings.background);
+              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:useDallE?"יוצר רקע עם AI...":"בונה רקע..." }:img));
+              const bgUrl = await generateBackground(bgPrompt, outputSize, referenceImage, settings.background, useDallE);
 
               // ── Step 3: Composite + Canvas shadows (product pixels untouched) ──
               setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"מרכיב תמונה וצללים..." }:img));
@@ -975,7 +1014,13 @@
                 </div>
                 <div style={{ flex:1, padding:"20px 28px", overflowY:"auto", borderLeft:`1px solid ${C.panelBorder}` }}>
                   <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20, paddingBottom:14, borderBottom:`1px solid ${C.panelBorder}` }}>
-                    <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:2, textTransform:"uppercase" }}>הגדרות סגנון</div>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:2, textTransform:"uppercase" }}>מצב עבודה</div>
+                    <div style={{ display:"flex", background:C.panelBg, borderRadius:6, border:`1px solid ${C.panelBorder}`, overflow:"hidden" }}>
+                      <button onClick={()=>setPromptMode("settings")} style={{ padding:"5px 12px", fontSize:9, fontWeight:700, border:"none", cursor:"pointer", fontFamily:"Rubik", background:promptMode==="settings"?C.green:"transparent", color:promptMode==="settings"?"#000":C.mutedDark }}>⚙ הגדרות</button>
+                      <button onClick={()=>setPromptMode("free")} style={{ padding:"5px 12px", fontSize:9, fontWeight:700, border:"none", cursor:"pointer", fontFamily:"Rubik", background:promptMode==="free"?C.green:"transparent", color:promptMode==="free"?"#000":C.mutedDark }}>✏ פרומפט חופשי</button>
+                    </div>
+                  </div>
                     <div style={{ display:"flex", gap:7, alignItems:"center" }}>
                       <select value={profileCampaign} onChange={e=>setProfileCampaign(e.target.value)} style={{ padding:"5px 8px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:5, color:C.mutedDark, fontSize:10, fontFamily:"Rubik" }}>
                         {Object.keys(SEASON_COLORS).map(s => <option key={s} value={s}>{s}</option>)}
@@ -984,7 +1029,7 @@
                       <button onClick={saveProfile} className="btn-green" style={{ ...outlineGreenBtn, padding:"5px 12px", fontSize:10 }}>+ שמור</button>
                     </div>
                   </div>
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 36px" }}>
+                  {promptMode === "settings" && <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 36px" }}>
                     <div>
                       <Tag label="רקע"           value={settings.background} onChange={set("background")} options={BG_OPTIONS} />
                       <Tag label="תאורה"          value={settings.lighting}   onChange={set("lighting")}   options={LIGHTING_OPTIONS} />
@@ -997,7 +1042,55 @@
                       <Tag label="סגנון כללי" value={settings.style}   onChange={set("style")}    options={STYLE_OPTIONS} />
                       <Tag label="יחס תמונה"  value={settings.aspect}  onChange={set("aspect")}   options={ASPECT_OPTIONS} />
                     </div>
-                  </div>
+                  </div>}
+                  {/* ── FREE PROMPT MODE ── */}
+                  {promptMode === "free" && (
+                    <div style={{ marginBottom:18 }}>
+                      {/* Saved prompts picker */}
+                      <div style={{ display:"flex", gap:6, marginBottom:10, alignItems:"center" }}>
+                        <button onClick={()=>setShowSavedPrompts(v=>!v)} style={{ padding:"5px 10px", borderRadius:5, border:`1px solid ${C.inputBorder}`, background:"#fff", color:C.mutedDark, fontSize:9, cursor:"pointer", fontFamily:"Rubik" }}>
+                          📋 פרומפטים שמורים {savedPrompts.length>0?`(${savedPrompts.length})`:""}
+                        </button>
+                        {freePromptText.trim() && (
+                          <div style={{ display:"flex", gap:5, flex:1 }}>
+                            <input value={savePromptName} onChange={e=>setSavePromptName(e.target.value)} placeholder="שם לשמירה..." style={{ flex:1, padding:"5px 8px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:5, color:C.bodyText, fontSize:9, fontFamily:"Rubik" }} />
+                            <button onClick={()=>{
+                              if (!savePromptName.trim()) return;
+                              setSavedPrompts(p=>[...p, { id:Date.now(), name:savePromptName.trim(), prompt:freePromptText }]);
+                              setSavePromptName("");
+                            }} className="btn-green" style={{ ...greenBtn, padding:"5px 10px", fontSize:9 }}>💾 שמור</button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Saved prompts dropdown */}
+                      {showSavedPrompts && savedPrompts.length>0 && (
+                        <div style={{ marginBottom:10, background:"#fff", borderRadius:8, border:`1px solid ${C.panelBorder}`, overflow:"hidden" }}>
+                          {savedPrompts.map(sp => (
+                            <div key={sp.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px", borderBottom:`1px solid ${C.panelBorder}` }}>
+                              <div onClick={()=>{ setFreePromptText(sp.prompt); setShowSavedPrompts(false); }} style={{ flex:1, cursor:"pointer" }}>
+                                <div style={{ fontSize:10, fontWeight:600, color:C.bodyText }}>{sp.name}</div>
+                                <div style={{ fontSize:8, color:C.muted, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:280 }}>{sp.prompt.slice(0,80)}...</div>
+                              </div>
+                              <button onClick={()=>setSavedPrompts(p=>p.filter(x=>x.id!==sp.id))} style={{ fontSize:11, color:"#ef4444", background:"none", border:"none", cursor:"pointer" }}>✕</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Free prompt textarea */}
+                      <textarea
+                        value={freePromptText}
+                        onChange={e=>setFreePromptText(e.target.value)}
+                        placeholder="כתבי פרומפט חופשי לחלוטין...&#10;לדוגמה: Professional product photography on pure white background, soft shadow directly below, studio lighting, photorealistic"
+                        style={{ width:"100%", height:120, padding:"10px 12px", background:C.inputBg, border:`1px solid ${C.green}`, borderRadius:8, color:C.bodyText, fontSize:11, fontFamily:"Rubik", resize:"vertical", lineHeight:1.7, direction:"ltr" }}
+                      />
+                      <div style={{ fontSize:9, color:C.muted, marginTop:5 }}>
+                        💡 הפרומפט ישלח ישירות ל-API. remove.bg עדיין פועל לחיתוך הרקע המקורי.
+                      </div>
+                    </div>
+                  )}
+
                   {/* ── Product scale + shadow offset sliders ── */}
                   <div style={{ marginTop:16, marginBottom:16, padding:"14px 16px", background:"#fff", borderRadius:10, border:`1px solid ${C.panelBorder}` }}>
                     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20 }}>
