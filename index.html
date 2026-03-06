@@ -97,6 +97,8 @@
       background:"אפור בהיר", lighting:"סטודיו נקי", angle:"פרונטלי ישיר",
       sharpness:"חד מאוד", shadow:"צל עדין", contrast:"רגיל",
       style:"מינימליסטי", aspect:"1:1 (ריבועי)", extraPrompt:"",
+      productScale: 88,
+      shadowOffset: 0,
     };
 
     const INITIAL_PROFILES = [
@@ -591,7 +593,7 @@
       };
 
       // ── Step 3: Composite product on background — pure Canvas, no AI touch ──
-      const compositeImages = (bgDataUrl, productBlob, shadowStyle, outputSize) => new Promise((resolve, reject) => {
+      const compositeImages = (bgDataUrl, productBlob, shadowStyle, outputSize, productScale, shadowOffset) => new Promise((resolve, reject) => {
         const [outW, outH] = outputSize.split("x").map(Number);
         const canvas = document.createElement("canvas");
         canvas.width = outW; canvas.height = outH;
@@ -604,14 +606,15 @@
 
           const productImg = new Image();
           productImg.onload = () => {
-            const maxW = outW * 0.76, maxH = outH * 0.76;
+            const maxW = outW * (productScale/100), maxH = outH * (productScale/100);
             const scale = Math.min(maxW / productImg.width, maxH / productImg.height);
             const pw = productImg.width * scale, ph = productImg.height * scale;
             const px = (outW - pw) / 2;
-            // Sit product on the lower third — looks grounded, not floating
-            const py = outH - ph - outH * 0.08;
+            // Product sits on ground — position adjustable via shadowOffset (-50 to +50)
+            const groundY = outH * (0.90 + shadowOffset * 0.002);
+            const py = groundY - ph;
 
-            const bottomY = py + ph;
+            const bottomY = groundY; // shadow starts exactly here
 
             // ── Ground shadow ellipse ──
             const noShadow = shadowStyle === "ללא צל";
@@ -621,9 +624,9 @@
                                 : shadowStyle === "צל נפח"   ? 0.40
                                 : shadowStyle === "צל עדין"  ? 0.25
                                 : 0.30;
-              const ellW = pw * 0.80, ellH = pw * 0.07;
+              const ellW = pw * 0.78, ellH = pw * 0.055;
               const ellX = px + (pw - ellW) / 2;
-              const ellY = bottomY - ellH * 0.8; // tight to base
+              const ellY = groundY - ellH; // zero gap — shadow touches product base
               const grad = ctx.createRadialGradient(
                 ellX + ellW/2, ellY + ellH/2, 0,
                 ellX + ellW/2, ellY + ellH/2, ellW/2
@@ -640,10 +643,10 @@
             // ── Drop shadow behind product ──
             if (!noShadow) {
               ctx.save();
-              ctx.shadowColor = "rgba(0,0,0,0.28)";
-              ctx.shadowBlur = pw * 0.06;
-              ctx.shadowOffsetX = pw * 0.01;
-              ctx.shadowOffsetY = ph * 0.02; // tight shadow close to product
+              ctx.shadowColor = "rgba(0,0,0,0.22)";
+              ctx.shadowBlur = pw * 0.04;
+              ctx.shadowOffsetX = 0;
+              ctx.shadowOffsetY = ph * 0.01; // minimal offset, no floating
               ctx.drawImage(productImg, px, py, pw, ph);
               ctx.restore();
             }
@@ -719,7 +722,7 @@
 
               // ── Step 3: Composite + Canvas shadows (product pixels untouched) ──
               setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"מרכיב תמונה וצללים..." }:img));
-              const resultUrl = await compositeImages(bgUrl, cutoutBlob, settings.shadow, outputSize);
+              const resultUrl = await compositeImages(bgUrl, cutoutBlob, settings.shadow, outputSize, settings.productScale||88, settings.shadowOffset||0);
 
               newResults.push({ original:images[i].preview, result:resultUrl, name:images[i].name, model:"inpainting" });
               setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"done", statusText:"" }:img));
@@ -982,6 +985,45 @@
                       <Tag label="יחס תמונה"  value={settings.aspect}  onChange={set("aspect")}   options={ASPECT_OPTIONS} />
                     </div>
                   </div>
+                  {/* ── Product scale + shadow offset sliders ── */}
+                  <div style={{ marginTop:16, marginBottom:16, padding:"14px 16px", background:"#fff", borderRadius:10, border:`1px solid ${C.panelBorder}` }}>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20 }}>
+
+                      {/* Product Scale */}
+                      <div>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                          <div style={{ fontSize:10, fontWeight:700, color:C.greenDark, letterSpacing:1, textTransform:"uppercase" }}>גודל מוצר</div>
+                          <div style={{ fontSize:12, fontWeight:700, color:C.bodyText, background:C.panelBg, padding:"2px 8px", borderRadius:4 }}>{settings.productScale||88}%</div>
+                        </div>
+                        <input type="range" min="40" max="98" step="1"
+                          value={settings.productScale||88}
+                          onChange={e => setSettings(p => ({ ...p, productScale: Number(e.target.value) }))}
+                          style={{ width:"100%", accentColor:C.green, cursor:"pointer" }} />
+                        <div style={{ display:"flex", justifyContent:"space-between", fontSize:8, color:C.muted, marginTop:3 }}>
+                          <span>קטן</span><span>גדול</span>
+                        </div>
+                      </div>
+
+                      {/* Shadow Offset */}
+                      <div>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                          <div style={{ fontSize:10, fontWeight:700, color:C.greenDark, letterSpacing:1, textTransform:"uppercase" }}>מיקום צל</div>
+                          <div style={{ fontSize:12, fontWeight:700, color:C.bodyText, background:C.panelBg, padding:"2px 8px", borderRadius:4 }}>
+                            {settings.shadowOffset > 0 ? `+${settings.shadowOffset}` : settings.shadowOffset||0}
+                          </div>
+                        </div>
+                        <input type="range" min="-50" max="50" step="1"
+                          value={settings.shadowOffset||0}
+                          onChange={e => setSettings(p => ({ ...p, shadowOffset: Number(e.target.value) }))}
+                          style={{ width:"100%", accentColor:C.green, cursor:"pointer" }} />
+                        <div style={{ display:"flex", justifyContent:"space-between", fontSize:8, color:C.muted, marginTop:3 }}>
+                          <span>למעלה</span><span>למטה</span>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+
                   <div style={{ marginTop:6 }}>
                     <div style={{ fontSize:10, fontWeight:700, color:C.greenDark, letterSpacing:2, marginBottom:7, textTransform:"uppercase" }}>הוראות נוספות</div>
                     <textarea value={settings.extraPrompt} onChange={e=>setSettings(p=>({ ...p,extraPrompt:e.target.value }))} placeholder="לדוגמה: ערפל עדין ברקע, גוון זהוב..." style={{ width:"100%", height:62, padding:"9px 12px", background:C.inputBg, border:`1px solid ${C.inputBorder}`, borderRadius:7, color:C.bodyText, fontSize:11, fontFamily:"Rubik", resize:"vertical", lineHeight:1.6 }} />
