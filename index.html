@@ -741,14 +741,61 @@
 
               // Build background generation prompt
               let bgPrompt = "";
-              let useDallE = false; // whether to use DALL-E for background (free mode) or Canvas gradient (settings mode)
+              let useDallE = false;
 
-              if (promptMode === "free" && freePromptText.trim()) {
-                // Free prompt mode — send to DALL-E, get real background
+              if (promptMode === "ai" && freePromptText.trim()) {
+                // ── AI מלא — with or without reference image ──
+                setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"יוצר תמונה עם AI..." }:img));
+                const safeSize = (outputSize==="1536x1024"||outputSize==="1024x1536") ? outputSize : "1024x1024";
+
+                let resultUrl = null;
+
+                if (referenceImage) {
+                  // Has reference — use gpt-image-1 edit so it SEES the reference
+                  const refSource = referenceImage.file
+                    ? referenceImage.file
+                    : await fetch(referenceImage.preview).then(r=>r.blob());
+                  const refPng = await fileToSquarePng(
+                    refSource instanceof File ? refSource : new File([refSource],"ref.png",{type:"image/png"})
+                  );
+                  // Also send the product image so AI has context
+                  const productPng = await fileToSquarePng(images[i].file);
+
+                  const fd = new FormData();
+                  fd.append("model", "gpt-image-1");
+                  fd.append("image[]", productPng, "product.png");
+                  fd.append("image[]", refPng, "reference.png");
+                  fd.append("prompt", freePromptText.trim());
+                  fd.append("n", "1");
+                  fd.append("size", safeSize);
+                  const aiResp = await fetch("https://api.openai.com/v1/images/edits", {
+                    method: "POST",
+                    headers: { "Authorization":`Bearer ${apiKeys.openai}` },
+                    body: fd,
+                  });
+                  const aiData = await aiResp.json();
+                  if (aiData.data?.[0]?.b64_json) resultUrl = `data:image/png;base64,${aiData.data[0].b64_json}`;
+                  else if (aiData.data?.[0]?.url) resultUrl = aiData.data[0].url;
+                  else throw new Error(aiData.error?.message || "No image generated");
+                } else {
+                  // No reference — use dall-e-3 with text only
+                  const aiResp = await fetch("https://api.openai.com/v1/images/generations", {
+                    method: "POST",
+                    headers: { "Content-Type":"application/json", "Authorization":`Bearer ${apiKeys.openai}` },
+                    body: JSON.stringify({ model:"dall-e-3", prompt:freePromptText.trim(), n:1, size:safeSize, quality:"hd", response_format:"b64_json" }),
+                  });
+                  const aiData = await aiResp.json();
+                  if (!aiData.data?.[0]?.b64_json) throw new Error(aiData.error?.message || "No image generated");
+                  resultUrl = `data:image/png;base64,${aiData.data[0].b64_json}`;
+                }
+
+                newResults.push({ original:images[i].preview, result:resultUrl, name:images[i].name, model: referenceImage ? "gpt-image-1 (AI + רפרנס)" : "dall-e-3 (AI מלא)" });
+                setImages(prev => prev.map((img,idx) => idx===i?{ ...img,status:"done",statusText:"" }:img));
+                continue;
+              } else if (promptMode === "free" && freePromptText.trim()) {
                 bgPrompt = freePromptText.trim();
                 useDallE = true;
               } else {
-                // Settings mode — Canvas gradient
                 const refNote = referenceImage
                   ? "Match the visual style, mood, color palette and background treatment of the reference style."
                   : "";
@@ -1018,7 +1065,8 @@
                     <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:2, textTransform:"uppercase" }}>מצב עבודה</div>
                     <div style={{ display:"flex", background:C.panelBg, borderRadius:6, border:`1px solid ${C.panelBorder}`, overflow:"hidden" }}>
                       <button onClick={()=>setPromptMode("settings")} style={{ padding:"5px 12px", fontSize:9, fontWeight:700, border:"none", cursor:"pointer", fontFamily:"Rubik", background:promptMode==="settings"?C.green:"transparent", color:promptMode==="settings"?"#000":C.mutedDark }}>⚙ הגדרות</button>
-                      <button onClick={()=>setPromptMode("free")} style={{ padding:"5px 12px", fontSize:9, fontWeight:700, border:"none", cursor:"pointer", fontFamily:"Rubik", background:promptMode==="free"?C.green:"transparent", color:promptMode==="free"?"#000":C.mutedDark }}>✏ פרומפט חופשי</button>
+                      <button onClick={()=>setPromptMode("free")} style={{ padding:"5px 12px", fontSize:9, fontWeight:700, border:"none", cursor:"pointer", fontFamily:"Rubik", background:promptMode==="free"?C.green:"transparent", color:promptMode==="free"?"#000":C.mutedDark }}>✏ פרומפט + גזירה</button>
+                      <button onClick={()=>setPromptMode("ai")} style={{ padding:"5px 12px", fontSize:9, fontWeight:700, border:"none", cursor:"pointer", fontFamily:"Rubik", background:promptMode==="ai"?C.green:"transparent", color:promptMode==="ai"?"#000":C.mutedDark }}>🤖 AI מלא</button>
                     </div>
                   </div>
                     <div style={{ display:"flex", gap:7, alignItems:"center" }}>
@@ -1044,7 +1092,7 @@
                     </div>
                   </div>}
                   {/* ── FREE PROMPT MODE ── */}
-                  {promptMode === "free" && (
+                  {(promptMode === "free" || promptMode === "ai") && (
                     <div style={{ marginBottom:18 }}>
                       {/* Saved prompts picker */}
                       <div style={{ display:"flex", gap:6, marginBottom:10, alignItems:"center" }}>
@@ -1086,7 +1134,12 @@
                         style={{ width:"100%", height:120, padding:"10px 12px", background:C.inputBg, border:`1px solid ${C.green}`, borderRadius:8, color:C.bodyText, fontSize:11, fontFamily:"Rubik", resize:"vertical", lineHeight:1.7, direction:"ltr" }}
                       />
                       <div style={{ fontSize:9, color:C.muted, marginTop:5 }}>
-                        💡 הפרומפט ישלח ישירות ל-API. remove.bg עדיין פועל לחיתוך הרקע המקורי.
+                        {promptMode==="ai"
+                          ? referenceImage
+                            ? "🤖 AI מלא + רפרנס — gpt-image-1 רואה את תמונת הרפרנס והמוצר ויוצר לפי הפרומפט."
+                            : "🤖 AI מלא — התמונה נוצרת ישירות מהפרומפט. הוסיפי רפרנס מהכפתור בהדר לתוצאה מדויקת יותר."
+                          : "✂️ מצב גזירה — remove.bg מסיר את הרקע המקורי, DALL·E יוצר רקע חדש לפי הפרומפט, המוצר נשמר זהה 100%."
+                        }
                       </div>
                     </div>
                   )}
