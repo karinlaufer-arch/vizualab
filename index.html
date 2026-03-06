@@ -515,62 +515,79 @@
         return await resp.blob();
       };
 
-      // ── Step 2: Generate background only via DALL-E 3 ────────────
-      // Analyze reference image colors to build accurate background prompt
-      const analyzeRefColors = (refImage) => new Promise((resolve) => {
-        if (!refImage) { resolve(null); return; }
+      // ── Step 2: Generate background — pure Canvas gradient, no AI ──
+      // Samples colors from reference image (or uses settings) to build clean gradient
+      const sampleImageColors = (imgSrc) => new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
           const c = document.createElement("canvas");
-          c.width = 50; c.height = 50;
+          c.width = 60; c.height = 60;
           const ctx = c.getContext("2d");
-          ctx.drawImage(img, 0, 0, 50, 50);
-          // Sample corners and edges for background color
-          const samples = [[2,2],[47,2],[2,47],[47,47],[25,2],[2,25],[47,25],[25,47]];
-          let r=0,g=0,b=0;
-          samples.forEach(([x,y]) => {
-            const d = ctx.getImageData(x,y,1,1).data;
-            r+=d[0]; g+=d[1]; b+=d[2];
-          });
-          r=Math.round(r/samples.length);
-          g=Math.round(g/samples.length);
-          b=Math.round(b/samples.length);
-          const brightness = (r+g+b)/3;
-          let colorDesc = brightness > 220 ? "very light gray to white gradient"
-            : brightness > 180 ? "light gray gradient"
-            : brightness > 120 ? "medium gray"
-            : brightness > 60  ? "dark gray"
-            : "very dark, almost black";
-          resolve({ r, g, b, brightness, colorDesc });
+          ctx.drawImage(img, 0, 0, 60, 60);
+          // Sample corners + top edge (background area)
+          const topSamples    = [[2,2],[30,2],[58,2],[2,5],[58,5]];
+          const bottomSamples = [[2,58],[30,58],[58,58]];
+          const avg = (pts) => {
+            let r=0,g=0,b=0;
+            pts.forEach(([x,y]) => { const d=ctx.getImageData(x,y,1,1).data; r+=d[0];g+=d[1];b+=d[2]; });
+            return { r:Math.round(r/pts.length), g:Math.round(g/pts.length), b:Math.round(b/pts.length) };
+          };
+          resolve({ top: avg(topSamples), bottom: avg(bottomSamples) });
         };
         img.onerror = () => resolve(null);
-        img.src = refImage.preview;
+        img.src = imgSrc;
       });
 
-      const generateBackground = async (prompt, size, refImage) => {
-        const safeSize = (size === "1536x1024" || size === "1024x1536") ? size : "1024x1024";
+      // Map settings → background colors
+      const BG_COLORS = {
+        "לבן נקי":        { top:{r:255,g:255,b:255}, bottom:{r:240,g:240,b:240} },
+        "אפור בהיר":      { top:{r:220,g:220,b:220}, bottom:{r:200,g:200,b:200} },
+        "אפור כהה":       { top:{r:100,g:100,b:100}, bottom:{r:70,g:70,b:70}   },
+        "שחור":           { top:{r:30,g:30,b:30},    bottom:{r:10,g:10,b:10}   },
+        "גרדיאנט אפור":   { top:{r:200,g:200,b:200}, bottom:{r:140,g:140,b:140} },
+        "גרדיאנט כהה":    { top:{r:60,g:60,b:60},    bottom:{r:20,g:20,b:20}   },
+        "בז' עדין":       { top:{r:245,g:240,b:230}, bottom:{r:225,g:218,b:205} },
+        "כחול עמוק":      { top:{r:20,g:30,b:70},    bottom:{r:5,g:10,b:40}    },
+      };
 
-        // Analyze reference if available
-        const refColors = await analyzeRefColors(refImage);
+      const generateBackground = async (prompt, size, refImage, bgSetting) => {
+        const [outW, outH] = size.split("x").map(Number);
 
-        const bgPrompt = [
-          "Product photography background — completely empty, no product, no objects, no props, no people, no text.",
-          refColors
-            ? `Background color: ${refColors.colorDesc}. Simple clean gradient background, smooth and minimal, exactly like a professional product photo studio.`
-            : "",
-          prompt,
-          "Simple, clean, minimal studio background. No creative elements. No geometric shapes. No patterns. No reflections in background.",
-          "Photorealistic, ultra high quality.",
-        ].filter(Boolean).join(" ");
+        // Get colors — from reference or from settings
+        let colors = null;
+        if (refImage?.preview) {
+          colors = await sampleImageColors(refImage.preview);
+        }
+        if (!colors) {
+          colors = BG_COLORS[bgSetting] || BG_COLORS["אפור בהיר"];
+        }
 
-        const resp = await fetch("https://api.openai.com/v1/images/generations", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKeys.openai}` },
-          body: JSON.stringify({ model: "dall-e-3", prompt: bgPrompt, n: 1, size: safeSize, quality: "hd", response_format: "b64_json" }),
-        });
-        const data = await resp.json();
-        if (!data.data?.[0]?.b64_json) throw new Error(data.error?.message || "No background generated");
-        return `data:image/png;base64,${data.data[0].b64_json}`;
+        const { top, bottom } = colors;
+
+        // Draw gradient on Canvas
+        const canvas = document.createElement("canvas");
+        canvas.width = outW; canvas.height = outH;
+        const ctx = canvas.getContext("2d");
+
+        // Main gradient top → bottom (slightly lighter on top, darker on bottom)
+        const grad = ctx.createLinearGradient(0, 0, 0, outH);
+        grad.addColorStop(0,    `rgb(${Math.min(top.r+15,255)},${Math.min(top.g+15,255)},${Math.min(top.b+15,255)})`);
+        grad.addColorStop(0.45, `rgb(${top.r},${top.g},${top.b})`);
+        grad.addColorStop(1,    `rgb(${bottom.r},${bottom.g},${bottom.b})`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, outW, outH);
+
+        // Subtle center vignette highlight (studio light feel)
+        const brightness = (top.r + top.g + top.b) / 3;
+        if (brightness > 60) {
+          const radGrad = ctx.createRadialGradient(outW/2, outH*0.35, 0, outW/2, outH*0.35, outW*0.6);
+          radGrad.addColorStop(0,   "rgba(255,255,255,0.12)");
+          radGrad.addColorStop(1,   "rgba(255,255,255,0)");
+          ctx.fillStyle = radGrad;
+          ctx.fillRect(0, 0, outW, outH);
+        }
+
+        return canvas.toDataURL("image/png");
       };
 
       // ── Step 3: Composite product on background — pure Canvas, no AI touch ──
@@ -697,8 +714,8 @@
               const cutoutBlob = await removeBackground(images[i].file);
 
               // ── Step 2: Generate new background ──
-              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"יוצר רקע חדש..." }:img));
-              const bgUrl = await generateBackground(bgPrompt, outputSize, referenceImage);
+              setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"בונה רקע..." }:img));
+              const bgUrl = await generateBackground(bgPrompt, outputSize, referenceImage, settings.background);
 
               // ── Step 3: Composite + Canvas shadows (product pixels untouched) ──
               setImages(prev => prev.map((img,idx) => idx===i?{ ...img,statusText:"מרכיב תמונה וצללים..." }:img));
