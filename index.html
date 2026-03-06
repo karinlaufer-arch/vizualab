@@ -655,6 +655,78 @@
                 <button onClick={()=>setShowApiModal(true)} style={{ padding:"5px 12px", borderRadius:5, cursor:"pointer", fontFamily:"Rubik", fontWeight:600, fontSize:9, border:apiKeys[selectedAI]?`1px solid ${C.green}`:"1px solid #555", background:apiKeys[selectedAI]?"rgba(8,248,46,0.1)":"transparent", color:apiKeys[selectedAI]?C.green:"#aaa" }}>
                   {apiKeys[selectedAI]?"✓ API מחובר":"⚙ API KEY"}
                 </button>
+
+                {/* ── Reference image button in header ── */}
+                <div style={{ position:"relative" }}>
+                  <button onClick={()=>setShowRefPicker(v=>!v)} style={{
+                    padding:"5px 12px", borderRadius:5, cursor:"pointer", fontFamily:"Rubik", fontWeight:600, fontSize:9,
+                    border: referenceImage ? `1px solid ${C.green}` : "1px solid #555",
+                    background: referenceImage ? "rgba(8,248,46,0.1)" : "transparent",
+                    color: referenceImage ? C.green : "#aaa",
+                    display:"flex", alignItems:"center", gap:5,
+                  }}>
+                    {referenceImage ? (
+                      <>
+                        <img src={referenceImage.preview} style={{ width:14, height:14, borderRadius:2, objectFit:"cover" }} />
+                        ◈ רפרנס פעיל
+                      </>
+                    ) : "◈ רפרנס"}
+                  </button>
+
+                  {showRefPicker && (
+                    <div style={{ position:"fixed", top:58, left:"auto", right:220, zIndex:300, background:"#fff", borderRadius:10, border:`1px solid ${C.panelBorder}`, boxShadow:"0 8px 32px rgba(0,0,0,0.18)", minWidth:280, direction:"rtl" }}>
+                      <div style={{ padding:"12px 14px", borderBottom:`1px solid ${C.panelBorder}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                        <div style={{ fontSize:11, fontWeight:700, color:C.bodyText }}>תמונת רפרנס</div>
+                        <button onClick={()=>setShowRefPicker(false)} style={{ fontSize:14, color:C.muted, background:"none", border:"none", cursor:"pointer" }}>✕</button>
+                      </div>
+
+                      {referenceImage && (
+                        <div style={{ padding:"10px 14px", borderBottom:`1px solid ${C.panelBorder}`, display:"flex", alignItems:"center", gap:10 }}>
+                          <img src={referenceImage.preview} style={{ width:48, height:48, objectFit:"cover", borderRadius:6, flexShrink:0 }} />
+                          <div style={{ flex:1 }}>
+                            <div style={{ fontSize:10, fontWeight:600, color:C.greenDark }}>רפרנס פעיל ✓</div>
+                            <div style={{ fontSize:9, color:C.muted }}>{referenceImage.name}</div>
+                          </div>
+                          <button onClick={()=>{ setReferenceImage(null); setShowRefPicker(false); }} style={{ fontSize:11, color:"#ef4444", background:"none", border:"1px solid rgba(239,68,68,0.3)", borderRadius:5, cursor:"pointer", padding:"3px 8px", fontFamily:"Rubik" }}>הסר</button>
+                        </div>
+                      )}
+
+                      <div style={{ padding:"10px 14px", borderBottom:`1px solid ${C.panelBorder}` }}>
+                        <div style={{ fontSize:9, fontWeight:700, color:C.mutedDark, letterSpacing:1, marginBottom:8 }}>מהספרייה</div>
+                        {campaigns.every(c=>c.refs.length===0) ? (
+                          <div style={{ fontSize:10, color:C.muted, padding:"4px 0 8px" }}>הספרייה ריקה — הוסיפי תמונות בטאב ספריית רפרנס</div>
+                        ) : (
+                          <div style={{ maxHeight:180, overflowY:"auto" }}>
+                            {campaigns.map(c => c.refs.map(ref => (
+                              <div key={ref.id} onClick={()=>{ setReferenceImage({ preview:ref.preview, file:null, name:ref.note||ref.name||"רפרנס" }); setShowRefPicker(false); }}
+                                style={{ display:"flex", alignItems:"center", gap:9, padding:"7px 4px", cursor:"pointer", borderRadius:6 }}
+                                onMouseEnter={e=>e.currentTarget.style.background=C.panelBg}
+                                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                                <img src={ref.preview} style={{ width:38, height:38, objectFit:"cover", borderRadius:5, flexShrink:0 }} />
+                                <div>
+                                  <div style={{ fontSize:10, color:C.bodyText, fontWeight:500 }}>{ref.note||ref.name||"ללא שם"}</div>
+                                  <div style={{ fontSize:8, color:C.muted }}>{c.name}</div>
+                                </div>
+                              </div>
+                            )))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ padding:"10px 14px" }}>
+                        <button onClick={()=>refUploadInput.current?.click()} style={{ width:"100%", padding:"8px 0", borderRadius:6, border:`1px solid ${C.green}`, background:C.greenLight, color:C.greenDark, fontSize:10, fontWeight:600, cursor:"pointer", fontFamily:"Rubik" }}>
+                          + העלה רפרנס חדש
+                        </button>
+                        <input ref={refUploadInput} type="file" accept="image/*" style={{ display:"none" }}
+                          onChange={e => {
+                            const f = e.target.files[0];
+                            if (f) { setReferenceImage({ preview:URL.createObjectURL(f), file:f, name:f.name }); setShowRefPicker(false); }
+                          }} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div style={{ width:1, height:28, background:"#333", margin:"0 3px" }} />
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                   <div style={{ textAlign:"left" }}>
@@ -735,6 +807,7 @@
                     <div style={{ fontSize:8, color:C.muted, letterSpacing:1, marginBottom:6, fontWeight:600 }}>TIPS</div>
                     <div style={{ fontSize:9, color:C.mutedDark, lineHeight:1.8 }}>העלי עם רקע לבן לתוצאה מיטבית. ניתן לעבד עד 20 תמונות בו זמנית.</div>
                   </div>
+
                 </div>
                 <div style={{ flex:1, padding:"20px 28px", overflowY:"auto", borderLeft:`1px solid ${C.panelBorder}` }}>
                   <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20, paddingBottom:14, borderBottom:`1px solid ${C.panelBorder}` }}>
@@ -774,66 +847,6 @@
                   </div>
                 </div>
                 <div style={{ width:296, padding:"18px 14px", overflowY:"auto", flexShrink:0, background:C.panelBg, borderLeft:`1px solid ${C.panelBorder}` }}>
-
-                  {/* ── Reference image picker ── */}
-                  <div style={{ marginBottom:14 }}>
-                    <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:2, textTransform:"uppercase", marginBottom:8 }}>תמונת רפרנס</div>
-
-                    {referenceImage ? (
-                      /* Selected reference — show thumbnail + clear */
-                      <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", background:"#fff", borderRadius:8, border:`1.5px solid ${C.green}` }}>
-                        <img src={referenceImage.preview} alt="ref" style={{ width:44, height:44, objectFit:"cover", borderRadius:5, flexShrink:0 }} />
-                        <div style={{ flex:1, overflow:"hidden" }}>
-                          <div style={{ fontSize:10, fontWeight:600, color:C.greenDark }}>רפרנס פעיל</div>
-                          <div style={{ fontSize:9, color:C.muted, textOverflow:"ellipsis", overflow:"hidden", whiteSpace:"nowrap" }}>{referenceImage.name}</div>
-                        </div>
-                        <button onClick={()=>setReferenceImage(null)} style={{ fontSize:12, color:C.muted, background:"none", border:"none", cursor:"pointer", flexShrink:0 }}>✕</button>
-                      </div>
-                    ) : (
-                      /* Not selected — show picker button */
-                      <button onClick={()=>setShowRefPicker(v=>!v)} style={{ width:"100%", padding:"9px 12px", borderRadius:8, border:`1px dashed ${C.inputBorder}`, background:"#fff", color:C.muted, fontSize:10, cursor:"pointer", fontFamily:"Rubik", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-                        <span style={{ fontSize:14 }}>◈</span> בחר תמונת רפרנס
-                      </button>
-                    )}
-
-                    {/* Ref picker dropdown */}
-                    {showRefPicker && (
-                      <div style={{ marginTop:8, background:"#fff", borderRadius:10, border:`1px solid ${C.panelBorder}`, boxShadow:"0 4px 20px rgba(0,0,0,0.1)", overflow:"hidden" }}>
-                        <div style={{ padding:"10px 12px", borderBottom:`1px solid ${C.panelBorder}` }}>
-                          <div style={{ fontSize:9, fontWeight:700, color:C.bodyText, letterSpacing:1, marginBottom:8 }}>בחר מהספרייה</div>
-                          {campaigns.every(c=>c.refs.length===0) ? (
-                            <div style={{ fontSize:10, color:C.muted, padding:"8px 0" }}>הספרייה ריקה — העלי תמונות בטאב ספריית רפרנס</div>
-                          ) : (
-                            <div style={{ maxHeight:180, overflowY:"auto" }}>
-                              {campaigns.map(c => c.refs.map(ref => (
-                                <div key={ref.id} onClick={()=>{ setReferenceImage({ preview:ref.preview, file:null, name:ref.note||ref.name }); setShowRefPicker(false); }}
-                                  style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 4px", cursor:"pointer", borderRadius:5, marginBottom:3 }}
-                                  onMouseEnter={e=>e.currentTarget.style.background=C.panelBg}
-                                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                                  <img src={ref.preview} alt="" style={{ width:36, height:36, objectFit:"cover", borderRadius:4, flexShrink:0 }} />
-                                  <div>
-                                    <div style={{ fontSize:10, color:C.bodyText, fontWeight:500 }}>{ref.note || ref.name || "ללא שם"}</div>
-                                    <div style={{ fontSize:8, color:C.muted }}>{c.name}</div>
-                                  </div>
-                                </div>
-                              )))}
-                            </div>
-                          )}
-                        </div>
-                        {/* Upload new reference */}
-                        <div style={{ padding:"10px 12px" }}>
-                          <button onClick={()=>refUploadInput.current?.click()} style={{ width:"100%", padding:"7px 0", borderRadius:6, border:`1px solid ${C.green}`, background:C.greenLight, color:C.greenDark, fontSize:10, fontWeight:600, cursor:"pointer", fontFamily:"Rubik" }}>
-                            + העלה רפרנס חדש
-                          </button>
-                          <input ref={refUploadInput} type="file" accept="image/*" style={{ display:"none" }}
-                            onChange={e => {
-                              const f = e.target.files[0];
-                              if (f) { setReferenceImage({ preview:URL.createObjectURL(f), file:f, name:f.name }); setShowRefPicker(false); }
-                            }} />
-                        </div>
-                      </div>
-                    )}
-                  </div>
 
                   {/* ── Process button ── */}
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
