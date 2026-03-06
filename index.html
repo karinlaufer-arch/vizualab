@@ -619,51 +619,56 @@
             // ── Draw product — ORIGINAL PIXELS, untouched ──
             ctx.drawImage(productImg, px, py, pw, ph);
 
-            // ── Ground shadow ellipse — drawn AFTER product so it's on top at base ──
-            const noShadow = shadowStyle === "ללא צל";
-            if (!noShadow) {
-              ctx.save();
-              const shadowAlpha = shadowStyle === "צל דרמטי" ? 0.60
-                                : shadowStyle === "צל נפח"   ? 0.45
-                                : shadowStyle === "צל עדין"  ? 0.28
-                                : 0.35;
-              // ellipse width = product width, height = thin slice
-              const ellW = pw * 0.85;
-              const ellH = ellW * 0.12;
-              const ellCX = px + pw / 2;
-              // shadowOffset controls gap: 0 = touching, negative = above product, positive = below
-              const ellCY = groundY + ellH * 0.5 + Math.max(0, shadowOffset) * 0.5;
-              const grad = ctx.createRadialGradient(ellCX, ellCY, 0, ellCX, ellCY, ellW / 2);
-              grad.addColorStop(0,   `rgba(0,0,0,${shadowAlpha})`);
-              grad.addColorStop(0.5, `rgba(0,0,0,${shadowAlpha * 0.5})`);
-              grad.addColorStop(1,   "rgba(0,0,0,0)");
-              ctx.beginPath();
-              ctx.ellipse(ellCX, ellCY, ellW / 2, ellH / 2, 0, 0, Math.PI * 2);
-              ctx.fillStyle = grad;
-              ctx.fill();
-              ctx.restore();
-            }
+            // ── DROP SHADOW — blurred silhouette of product behind & below ──
+            if (shadowStyle !== "ללא צל") {
+              const alpha = shadowStyle === "צל דרמטי" ? 0.60
+                          : shadowStyle === "צל נפח"   ? 0.42
+                          : shadowStyle === "צל עדין"  ? 0.22
+                          : shadowStyle === "רפלקציה (ראי)" ? 0.18 : 0.25;
+              const blurR = shadowStyle === "צל דרמטי" ? pw*0.10
+                          : shadowStyle === "צל נפח"   ? pw*0.08
+                          : pw * 0.05;
+              // shadowOffset: 0 = natural below, negative = more behind, positive = further below
+              const offX = 0;
+              const offY = pw * 0.04 + Math.max(0, shadowOffset) * 0.4;
 
-            // ── Ground reflection (רפלקציה only) ──
-            if (shadowStyle === "רפלקציה (ראי)") {
-              const reflH = ph * 0.25;
-              const reflY = groundY;
-              if (reflY + reflH < outH) {
-                ctx.save();
-                ctx.globalAlpha = 0.30;
-                // Mirror flip
-                ctx.translate(px, reflY + reflY - py - ph);
-                ctx.scale(1, -1);
-                ctx.drawImage(productImg, px, py, pw, ph);
-                ctx.restore();
-                // Fade out
-                ctx.save();
-                const fadeGrad = ctx.createLinearGradient(0, reflY, 0, reflY + reflH);
-                fadeGrad.addColorStop(0, "rgba(255,255,255,0)");
-                fadeGrad.addColorStop(1, "rgba(255,255,255,1)");
-                ctx.fillStyle = fadeGrad;
-                ctx.fillRect(px, reflY, pw, reflH);
-                ctx.restore();
+              // Draw product silhouette onto temp canvas, then blur it
+              const sc = document.createElement("canvas");
+              sc.width = outW; sc.height = outH;
+              const sCtx = sc.getContext("2d");
+              sCtx.globalAlpha = alpha;
+              sCtx.drawImage(productImg, px + offX, py + offY, pw, ph);
+
+              ctx.save();
+              ctx.filter = `blur(${Math.round(blurR)}px)`;
+              ctx.globalCompositeOperation = "multiply";
+              ctx.drawImage(sc, 0, 0);
+              ctx.filter = "none";
+              ctx.globalCompositeOperation = "source-over";
+              ctx.restore();
+
+              // ── Reflection (ראי only) ──
+              if (shadowStyle === "רפלקציה (ראי)") {
+                const reflH = ph * 0.30;
+                const reflY = groundY;
+                if (reflY + reflH < outH) {
+                  const rc = document.createElement("canvas");
+                  rc.width = outW; rc.height = outH;
+                  const rCtx = rc.getContext("2d");
+                  rCtx.save();
+                  rCtx.translate(0, reflY * 2 + ph);
+                  rCtx.scale(1, -1);
+                  rCtx.drawImage(productImg, px, py, pw, ph);
+                  rCtx.restore();
+                  const fg = rCtx.createLinearGradient(0, reflY, 0, reflY + reflH);
+                  fg.addColorStop(0, "rgba(255,255,255,0)");
+                  fg.addColorStop(1, "rgba(255,255,255,1)");
+                  rCtx.fillStyle = fg;
+                  rCtx.fillRect(0, reflY, outW, reflH);
+                  ctx.globalAlpha = 0.38;
+                  ctx.drawImage(rc, 0, 0);
+                  ctx.globalAlpha = 1;
+                }
               }
             }
 
