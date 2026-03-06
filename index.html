@@ -616,61 +616,53 @@
 
             const bottomY = groundY; // shadow starts exactly here
 
-            // ── Ground shadow ellipse ──
+            // ── Draw product — ORIGINAL PIXELS, untouched ──
+            ctx.drawImage(productImg, px, py, pw, ph);
+
+            // ── Ground shadow ellipse — drawn AFTER product so it's on top at base ──
             const noShadow = shadowStyle === "ללא צל";
             if (!noShadow) {
               ctx.save();
-              const shadowAlpha = shadowStyle === "צל דרמטי" ? 0.55
-                                : shadowStyle === "צל נפח"   ? 0.40
-                                : shadowStyle === "צל עדין"  ? 0.25
-                                : 0.30;
-              const ellW = pw * 0.78, ellH = pw * 0.055;
-              const ellX = px + (pw - ellW) / 2;
-              const ellY = groundY - ellH; // zero gap — shadow touches product base
-              const grad = ctx.createRadialGradient(
-                ellX + ellW/2, ellY + ellH/2, 0,
-                ellX + ellW/2, ellY + ellH/2, ellW/2
-              );
-              grad.addColorStop(0, `rgba(0,0,0,${shadowAlpha})`);
-              grad.addColorStop(1, "rgba(0,0,0,0)");
+              const shadowAlpha = shadowStyle === "צל דרמטי" ? 0.60
+                                : shadowStyle === "צל נפח"   ? 0.45
+                                : shadowStyle === "צל עדין"  ? 0.28
+                                : 0.35;
+              // ellipse width = product width, height = thin slice
+              const ellW = pw * 0.85;
+              const ellH = ellW * 0.12;
+              const ellCX = px + pw / 2;
+              // shadowOffset controls gap: 0 = touching, negative = above product, positive = below
+              const ellCY = groundY + ellH * 0.5 + Math.max(0, shadowOffset) * 0.5;
+              const grad = ctx.createRadialGradient(ellCX, ellCY, 0, ellCX, ellCY, ellW / 2);
+              grad.addColorStop(0,   `rgba(0,0,0,${shadowAlpha})`);
+              grad.addColorStop(0.5, `rgba(0,0,0,${shadowAlpha * 0.5})`);
+              grad.addColorStop(1,   "rgba(0,0,0,0)");
               ctx.beginPath();
-              ctx.ellipse(ellX + ellW/2, ellY + ellH/2, ellW/2, ellH/2, 0, 0, Math.PI*2);
+              ctx.ellipse(ellCX, ellCY, ellW / 2, ellH / 2, 0, 0, Math.PI * 2);
               ctx.fillStyle = grad;
               ctx.fill();
               ctx.restore();
             }
 
-            // ── Drop shadow behind product ──
-            if (!noShadow) {
-              ctx.save();
-              ctx.shadowColor = "rgba(0,0,0,0.22)";
-              ctx.shadowBlur = pw * 0.04;
-              ctx.shadowOffsetX = 0;
-              ctx.shadowOffsetY = ph * 0.01; // minimal offset, no floating
-              ctx.drawImage(productImg, px, py, pw, ph);
-              ctx.restore();
-            }
-
-            // ── Draw product — ORIGINAL PIXELS, untouched ──
-            ctx.drawImage(productImg, px, py, pw, ph);
-
-            // ── Subtle ground reflection ──
-            if (shadowStyle === "רפלקציה (ראי)" || shadowStyle === "צל נפח") {
-              const reflH = ph * 0.28;
-              if (bottomY + reflH < outH) {
+            // ── Ground reflection (רפלקציה only) ──
+            if (shadowStyle === "רפלקציה (ראי)") {
+              const reflH = ph * 0.25;
+              const reflY = groundY;
+              if (reflY + reflH < outH) {
                 ctx.save();
-                ctx.globalAlpha = 0.35;
-                ctx.translate(px, bottomY * 2);
+                ctx.globalAlpha = 0.30;
+                // Mirror flip
+                ctx.translate(px, reflY + reflY - py - ph);
                 ctx.scale(1, -1);
                 ctx.drawImage(productImg, px, py, pw, ph);
                 ctx.restore();
-                // Fade reflection out
+                // Fade out
                 ctx.save();
-                const fadeGrad = ctx.createLinearGradient(0, bottomY, 0, bottomY + reflH);
+                const fadeGrad = ctx.createLinearGradient(0, reflY, 0, reflY + reflH);
                 fadeGrad.addColorStop(0, "rgba(255,255,255,0)");
                 fadeGrad.addColorStop(1, "rgba(255,255,255,1)");
                 ctx.fillStyle = fadeGrad;
-                ctx.fillRect(px, bottomY, pw, reflH);
+                ctx.fillRect(px, reflY, pw, reflH);
                 ctx.restore();
               }
             }
