@@ -591,8 +591,8 @@
             const scale = Math.min(maxW / productImg.width, maxH / productImg.height);
             const pw = productImg.width * scale, ph = productImg.height * scale;
             const px = (outW - pw) / 2;
-            // Position product slightly above center for visual balance
-            const py = (outH - ph) / 2 - outH * 0.03;
+            // Sit product on the lower third — looks grounded, not floating
+            const py = outH - ph - outH * 0.08;
 
             const bottomY = py + ph;
 
@@ -604,9 +604,9 @@
                                 : shadowStyle === "צל נפח"   ? 0.40
                                 : shadowStyle === "צל עדין"  ? 0.25
                                 : 0.30;
-              const ellW = pw * 0.82, ellH = pw * 0.10;
+              const ellW = pw * 0.80, ellH = pw * 0.07;
               const ellX = px + (pw - ellW) / 2;
-              const ellY = bottomY - ellH * 0.5;
+              const ellY = bottomY - ellH * 0.8; // tight to base
               const grad = ctx.createRadialGradient(
                 ellX + ellW/2, ellY + ellH/2, 0,
                 ellX + ellW/2, ellY + ellH/2, ellW/2
@@ -623,10 +623,10 @@
             // ── Drop shadow behind product ──
             if (!noShadow) {
               ctx.save();
-              ctx.shadowColor = "rgba(0,0,0,0.30)";
-              ctx.shadowBlur = pw * 0.08;
-              ctx.shadowOffsetX = pw * 0.02;
-              ctx.shadowOffsetY = ph * 0.04;
+              ctx.shadowColor = "rgba(0,0,0,0.28)";
+              ctx.shadowBlur = pw * 0.06;
+              ctx.shadowOffsetX = pw * 0.01;
+              ctx.shadowOffsetY = ph * 0.02; // tight shadow close to product
               ctx.drawImage(productImg, px, py, pw, ph);
               ctx.restore();
             }
