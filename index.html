@@ -619,28 +619,48 @@
             // ── Draw product — ORIGINAL PIXELS, untouched ──
             ctx.drawImage(productImg, px, py, pw, ph);
 
-            // ── DROP SHADOW using ctx.shadow* API — reliable on all backgrounds ──
+            // ── SHADOW — only downward, like professional product photo ──
             if (shadowStyle !== "ללא צל") {
-              const shadowAlpha = shadowStyle === "צל דרמטי" ? 0.75
-                                : shadowStyle === "צל נפח"   ? 0.55
-                                : shadowStyle === "צל עדין"  ? 0.35
-                                : shadowStyle === "רפלקציה (ראי)" ? 0.25
-                                : 0.40;
-              const blurR = shadowStyle === "צל דרמטי" ? pw * 0.14
-                          : shadowStyle === "צל נפח"   ? pw * 0.10
-                          : pw * 0.07;
-              const offY = pw * 0.06 + Math.max(0, shadowOffset) * 0.6;
+              const shadowAlpha = shadowStyle === "צל דרמטי" ? 0.45
+                                : shadowStyle === "צל נפח"   ? 0.30
+                                : shadowStyle === "צל עדין"  ? 0.18
+                                : shadowStyle === "רפלקציה (ראי)" ? 0.15
+                                : 0.22;
+              const blurR = shadowStyle === "צל דרמטי" ? pw * 0.08
+                          : shadowStyle === "צל נפח"   ? pw * 0.06
+                          : pw * 0.04;
+              // Shadow offset — only downward, never sideways
+              const baseOffY = ph * 0.03;
+              const extraOffY = Math.max(0, shadowOffset) * 0.4;
+              const offY = baseOffY + extraOffY;
 
-              // Redraw product with shadow properties set
+              // Draw product silhouette on offscreen canvas — then clip to bottom half only
+              const sc = document.createElement("canvas");
+              sc.width = outW; sc.height = outH;
+              const sCtx = sc.getContext("2d");
+              // Draw product, then tint black
+              sCtx.drawImage(productImg, px, py + offY, pw, ph);
+              sCtx.globalCompositeOperation = "source-atop";
+              sCtx.fillStyle = `rgba(0,0,0,1)`;
+              sCtx.fillRect(0, 0, outW, outH);
+              sCtx.globalCompositeOperation = "source-over";
+
+              // Clip shadow to bottom 40% of product only — no side/top shadow
+              const clipY = py + ph * 0.60;
+              const clipH = outH - clipY;
+
               ctx.save();
-              ctx.shadowColor   = `rgba(0,0,0,${shadowAlpha})`;
-              ctx.shadowBlur    = blurR;
-              ctx.shadowOffsetX = 0;
-              ctx.shadowOffsetY = offY;
-              ctx.drawImage(productImg, px, py, pw, ph);
+              ctx.beginPath();
+              ctx.rect(0, clipY, outW, clipH);
+              ctx.clip();
+              ctx.globalAlpha = shadowAlpha;
+              ctx.filter = `blur(${Math.round(blurR)}px)`;
+              ctx.drawImage(sc, 0, 0);
+              ctx.filter = "none";
+              ctx.globalAlpha = 1;
               ctx.restore();
 
-              // Redraw product clean on top (no shadow) to keep crisp edges
+              // Redraw product clean on top
               ctx.drawImage(productImg, px, py, pw, ph);
 
               // ── Reflection (ראי only) ──
